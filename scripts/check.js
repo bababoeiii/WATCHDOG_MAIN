@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { envFiles, ENV_FILES, readConfig } from "../src/config.js";
+import { ENV_FILE, readConfig } from "../src/config.js";
 import { createUpdater, remoteHeads } from "../src/updater.js";
 
 const APP_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -33,27 +33,13 @@ async function getJson(url, timeoutMs = 10_000) {
 
 // ---------------------------------------------------------------- .env
 console.log(`Checking ${APP_DIR}\n`);
-const env = envFiles();
-if (!env.used.length) {
-  fail(".env", `not found: ${ENV_FILES.join(", ")} (run the installer or copy .env.example)`);
+if (!fs.existsSync(ENV_FILE)) {
+  fail(".env", `${ENV_FILE} not found (run the installer or copy .env.example)`);
   process.exit(1);
 }
-// Several files are merged: the first one wins, the next ones fill in what it doesn't set.
-for (const f of ENV_FILES) {
-  if (env.missing.includes(f)) {
-    (f === ENV_FILES[0] && ENV_FILES.length > 1 ? fail : warn)(".env", `${f} not found${f === ENV_FILES[0] ? " (WATCHDOG_ENV_FILE points to it)" : ""}`);
-    continue;
-  }
-  const mode = fs.statSync(f).mode & 0o777;
-  const role = ENV_FILES.length === 1 ? "" : f === env.used[0] ? " (wins)" : " (fills in the rest)";
-  if (mode & 0o077) warn(".env permissions", `${f}: ${mode.toString(8)}, readable by other users; it holds the bot token (chmod 600)`);
-  else ok(".env", `${f}${role}`);
-}
-if (env.used.length > 1) {
-  const first = new Set(env.keysOf[env.used[0]]);
-  const filled = [...new Set(env.used.slice(1).flatMap((f) => env.keysOf[f]))].filter((k) => !first.has(k));
-  if (filled.length) ok(".env merge", `taken from ${env.used.slice(1).join(", ")}: ${filled.join(", ")}`);
-}
+const mode = fs.statSync(ENV_FILE).mode & 0o777;
+if (mode & 0o077) warn(".env permissions", `${mode.toString(8)}: readable by other users, it holds the bot token (chmod 600 .env)`);
+else ok(".env", ENV_FILE);
 
 const { cfg, problems } = readConfig();
 if (problems.length) {

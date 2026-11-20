@@ -11,7 +11,7 @@ SERVICE="${WATCHDOG_SERVICE:-watchdog-main}"
 UNIT="/etc/systemd/system/$SERVICE.service"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 
-usage() { sed -n '2,9p' "$SELF" | sed -E 's/^# ?//'; }
+usage() { sed -n '2,8p' "$SELF" | sed -E 's/^# ?//'; }
 die() { echo "✖ $*" >&2; exit 1; }
 
 cmd="${1:-}"
@@ -31,18 +31,7 @@ NODE="$(prop ExecStart | awk '{print $1}')"; [[ -x "$NODE" ]] || NODE="$(command
 [[ -d "$APP/src" ]] || die "$APP doesn't look like the main-server folder."
 cd "$APP" || die "can't enter $APP"
 
-# The service may read another .env too (WATCHDOG_ENV_FILE, e.g. /www/wwwroot/WATCHDOG/.env): it is
-# merged with the .env next to the code, and wins. env_get reads settings the same way.
-ENV_EXTRA="$(systemctl show -p Environment --value "$SERVICE" 2>/dev/null | tr ' ' '\n' | sed -n 's/^WATCHDOG_ENV_FILE=//p' | tail -1)"
-ENV_FILES=(); [[ -n "$ENV_EXTRA" ]] && ENV_FILES+=("$ENV_EXTRA"); [[ "$ENV_EXTRA" -ef "$APP/.env" ]] || ENV_FILES+=("$APP/.env")
-env_get() {
-  local f v
-  for f in "${ENV_FILES[@]}"; do
-    [[ -r "$f" ]] && grep -q "^$1=" "$f" || continue
-    v="$(sed -n "s/^$1=//p" "$f" | tail -1 | tr -d '\r')"; v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
-    printf '%s' "$v"; return
-  done
-}
+env_get() { sed -n "s/^$1=//p" .env 2>/dev/null | tail -1 | tr -d '\r' | sed -E "s/^[\"']//; s/[\"']$//"; }
 PORT="$(env_get PORT)"; PORT="${PORT:-8080}"
 HOST="$(env_get HOST)"; HOST="${HOST:-127.0.0.1}"; [[ "$HOST" == 0.0.0.0 || "$HOST" == "::" ]] && HOST=127.0.0.1
 PUBLIC_URL="$(env_get PUBLIC_URL)"
@@ -91,13 +80,11 @@ if [[ "$cmd" == reload ]]; then
   fi
   out="${out#\[reload\] }"
   if [[ "$out" == failed* ]]; then die "Reload ${out} — the running server keeps its old settings."; fi
-  field() { sed -nE "s/.*· $1: ([^·]*).*/\1/p" <<<"$out" | sed 's/ *$//'; }
-  files="$(field files)"; missing="$(field missing)"; changed="$(field 'changed now')"; later="$(field 'needs a restart')"
+  changed="$(sed -E 's/^ok · changed now: (.*) · needs a restart: .*$/\1/' <<<"$out")"
+  later="$(sed -E 's/^.* · needs a restart: (.*)$/\1/' <<<"$out")"
   echo "✔ .env reloaded"
-  [[ -n "$files" ]] && echo "  read:              $files"
-  [[ -n "$missing" ]] && echo "  ⚠ not found:       $missing"
-  echo "  applied now:       ${changed:-nothing}"
-  if [[ -n "$later" && "$later" != nothing ]]; then
+  echo "  applied now:       $changed"
+  if [[ "$later" != nothing ]]; then
     echo "  needs a restart:   $later"
     echo "  → run: watchdog-main restart"
   fi
@@ -107,7 +94,7 @@ fi
 # ---------------------------------------------------------------- test: self-check
 if [[ "$cmd" == test ]]; then
   [[ -f scripts/check.js ]] || die "scripts/check.js is missing: update the main server first (/update main)."
-  as_user env ${ENV_EXTRA:+WATCHDOG_ENV_FILE="$ENV_EXTRA"} "$NODE" scripts/check.js
+  as_user "$NODE" scripts/check.js
   exit $?
 fi
 
@@ -121,11 +108,6 @@ if [[ "${P[ActiveState]}" == active ]]; then
   printf -v upt '%dd %dh %dm' $((up/86400)) $((up%86400/3600)) $((up%3600/60))
   mem="${P[MemoryCurrent]}"; [[ "$mem" =~ ^[0-9]+$ ]] && mem="$((mem/1024/1024)) MB" || mem="?"
   echo "✔ running for ${upt#0d } · memory $mem · automatic restarts: ${P[NRestarts]:-0}"
-  echo "  code:     $APP"
-  for f in "${ENV_FILES[@]}"; do
-    [[ -f "$f" ]] && echo "  settings: $f$([[ ${#ENV_FILES[@]} -gt 1 && "$f" == "${ENV_FILES[0]}" ]] && echo " (wins)")" \
-      || echo "  ⚠ settings file not found: $f"
-  done
 else
   echo "✖ ${P[ActiveState]} (${P[SubState]}) — start it with: watchdog-main start"; bad=1
 fi

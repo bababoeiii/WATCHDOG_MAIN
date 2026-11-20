@@ -1,7 +1,7 @@
 // Watchdog main server — entry point.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENV_NAMES, envFiles, loadConfig, readConfig, RESTART_KEYS } from "./config.js";
+import { ENV_NAMES, loadConfig, readConfig, RESTART_KEYS } from "./config.js";
 import { Store } from "./store.js";
 import { Monitor } from "./monitor.js";
 import { Notifier } from "./notifier.js";
@@ -11,10 +11,6 @@ import { esc, setTimezone } from "./format.js";
 
 const APP_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cfg = loadConfig();
-{
-  const { used, missing } = envFiles();
-  console.log(`Settings from ${used.join(" + ") || "(no .env file)"}${missing.length ? ` (not found: ${missing.join(", ")})` : ""}`);
-}
 if (!setTimezone(cfg.timezone)) console.warn(`Unknown TIMEZONE "${cfg.timezone}", using the machine's time zone`);
 
 // Log stray async errors instead of crashing: a crash would drop live history and alert state.
@@ -130,11 +126,7 @@ function reloadConfig() {
     monitor.refreshSubHeads(0);
   }
   const names = (keys) => keys.filter((k) => ENV_NAMES[k]).map((k) => ENV_NAMES[k]).join(", ") || "nothing";
-  const { used, missing } = envFiles();
-  console.log(
-    `[reload] ok · files: ${used.join(" + ")}${missing.length ? ` · missing: ${missing.join(", ")}` : ""}` +
-      ` · changed now: ${names(live)} · needs a restart: ${names(later)}`,
-  );
+  console.log(`[reload] ok · changed now: ${names(live)} · needs a restart: ${names(later)}`);
 }
 process.on("SIGHUP", reloadConfig);
 u?.start(

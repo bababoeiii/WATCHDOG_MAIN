@@ -5,67 +5,13 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 
 const APP_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-
-// ---------------------------------------------------------------- .env files
-// The .env next to the code, plus optionally another one (WATCHDOG_ENV_FILE, set in the service,
-// e.g. /www/wwwroot/WATCHDOG/.env). Both are merged; WATCHDOG_ENV_FILE wins, and what it doesn't
-// set comes from the .env next to the code. The same files are read again on reload.
-const EXTRA_ENV = (process.env.WATCHDOG_ENV_FILE || "").trim();
-/** .env files in priority order (the first one wins). */
-export const ENV_FILES = [...new Set([EXTRA_ENV && path.resolve(EXTRA_ENV), path.join(APP_DIR, ".env")].filter(Boolean))];
-export const ENV_FILE = ENV_FILES[0];
-
-/**
- * Read and merge ENV_FILES. A missing file is skipped; one that exists but can't be read throws
- * (better to fail than to run on half the settings).
- * @returns {{ values: Record<string,string>, used: string[], missing: string[], keysOf: Record<string,string[]> }}
- */
-export function readEnvFiles() {
-  const used = [], missing = [], keysOf = {}, parsed = {};
-  for (const f of ENV_FILES) {
-    try {
-      parsed[f] = dotenv.parse(fs.readFileSync(f, "utf8"));
-    } catch (e) {
-      if (e.code === "ENOENT") { missing.push(f); continue; }
-      throw new Error(`can't read ${f}: ${e.code === "EACCES" ? "permission denied for this user" : e.message}`);
-    }
-    used.push(f);
-    keysOf[f] = Object.keys(parsed[f]);
-  }
-  const values = {};
-  for (const f of [...used].reverse()) Object.assign(values, parsed[f]); // earlier files win
-  return { values, used, missing, keysOf };
-}
-
-// Variables really set in the environment (not from a file) keep priority over the files.
-const realEnv = new Set(Object.keys(process.env));
-let fromFile = {};
-let envInfo = { values: {}, used: [], missing: [...ENV_FILES], keysOf: {} };
-function applyEnvFiles(info) {
-  for (const k of Object.keys(fromFile)) if (!(k in info.values)) delete process.env[k]; // line removed
-  fromFile = {};
-  for (const [k, v] of Object.entries(info.values)) {
-    if (realEnv.has(k)) continue;
-    process.env[k] = v;
-    fromFile[k] = v;
-  }
-  envInfo = info;
-}
-try {
-  applyEnvFiles(readEnvFiles());
-} catch (e) {
-  console.error(`Watchdog config error: ${e.message}`);
-  process.exit(1);
-}
-/** Which .env files the current settings came from. */
-export const envFiles = () => envInfo;
+export const ENV_FILE = process.env.WATCHDOG_ENV_FILE || path.join(APP_DIR, ".env");
+let fromFile = dotenv.config({ path: ENV_FILE, quiet: true }).parsed || {};
 
 /**
  * Settings that only take effect after a restart (they are used once, at startup).
  * Everything else changes live on reload (SIGHUP, `watchdog-main reload`).
  */
-export const RESTART_KEYS = ["botToken", "host", "port", "dataFile", "devNoAuth", "webappUrl", "autoUpdate", "updateCheckMinutes", "updateBranch", "githubToken"];
-
 /** .env names of the config keys, for messages (`recipients` is derived, not a setting). */
 export const ENV_NAMES = {
   botToken: "BOT_TOKEN", adminIds: "ADMIN_IDS", alertChatIds: "ALERT_CHAT_IDS", webappUrl: "WEBAPP_URL",
@@ -77,6 +23,7 @@ export const ENV_NAMES = {
   autoUpdate: "AUTO_UPDATE", updateCheckMinutes: "UPDATE_CHECK_MINUTES", updateBranch: "UPDATE_BRANCH",
   githubToken: "UPDATE_GITHUB_TOKEN", subGithubToken: "SUB_GITHUB_TOKEN",
 };
+export const RESTART_KEYS = ["botToken", "host", "port", "dataFile", "devNoAuth", "webappUrl", "autoUpdate", "updateCheckMinutes", "updateBranch", "githubToken"];
 
 const str = (name, def = "") => (process.env[name] ?? def).toString().trim();
 const num = (name, def) => {
@@ -100,18 +47,17 @@ const ids = (name) =>
       return n;
     });
 
-/** Read the .env files again (for a reload). Values from the files win; lines removed from them are dropped. */
-function rereadEnvFiles() {
-  const info = readEnvFiles();
-  if (!info.used.length) throw Object.assign(new Error(`no .env found (${ENV_FILES.join(", ")})`), { code: "ENOENT" });
-  // the file WATCHDOG_ENV_FILE points to went missing: don't quietly fall back to the other one
-  if (EXTRA_ENV && info.missing.includes(ENV_FILES[0])) throw new Error(`${ENV_FILES[0]} not found (WATCHDOG_ENV_FILE)`);
-  applyEnvFiles(info);
+/** Read .env again (for a reload). Values from the file win; lines removed from it are dropped. */
+function rereadEnvFile() {
+  const parsed = dotenv.parse(fs.readFileSync(ENV_FILE));
+  for (const k of Object.keys(fromFile)) if (!(k in parsed)) delete process.env[k];
+  Object.assign(process.env, parsed);
+  fromFile = parsed;
 }
 
 /** @returns {{cfg: object, problems: string[]}} */
 export function readConfig({ reload = false } = {}) {
-  if (reload) rereadEnvFiles();
+  if (reload) rereadEnvFile();
   const webappUrl = str("WEBAPP_URL").replace(/\/+$/, "/");
   let publicUrl = str("PUBLIC_URL").replace(/\/+$/, "");
   if (!publicUrl && webappUrl) {
