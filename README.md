@@ -45,7 +45,7 @@ sub servers report metrics with a per-server token, and the main server tells th
 
 ## 0. Put this project on GitHub
 
-Push this folder to its own GitHub repository, for example `github.com/you/watchdog-main`.
+This project lives in its own GitHub repository: `github.com/bababoeiii/WATCHDOG_MAIN`.
 A **public** repo is simplest. A **private** repo works too: create a fine-grained token with
 read-only *Contents* access and pass it as `UPDATE_GITHUB_TOKEN` in `.env`.
 
@@ -77,8 +77,8 @@ Telegram / sub servers ──HTTPS 443──▶ aaPanel nginx (domain + Let's En
 **Step 2: install (one command, over SSH)**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/you/watchdog-main/main/install.sh | sudo bash -s -- \
-  --repo https://github.com/you/watchdog-main.git
+curl -fsSL https://raw.githubusercontent.com/bababoeiii/WATCHDOG_MAIN/main/install.sh | sudo bash -s -- \
+  --repo https://github.com/bababoeiii/WATCHDOG_MAIN.git
 ```
 
 (or from a clone: `sudo bash install.sh`)
@@ -136,8 +136,8 @@ In a **private chat** with your bot: `/add web-1`. Or in the dashboard: **＋ Ad
 You get the `.env` lines **and** (with `SUB_REPO` set to a public repo) a ready-made one-line installer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/you/watchdog-sub/main/install.sh | sudo bash -s -- \
-  --repo https://github.com/you/watchdog-sub.git --branch main \
+curl -fsSL https://raw.githubusercontent.com/bababoeiii/WATCHDOG_SUB/main/install.sh | sudo bash -s -- \
+  --repo https://github.com/bababoeiii/WATCHDOG_SUB.git --branch main \
   --main https://watchdog.example.com --token wd_Xb3k…
 ```
 
