@@ -7,6 +7,8 @@ After=network-online.target
 Type=simple
 WorkingDirectory=@APP@
 ExecStart=@NODE@ @APP@/src/index.js
+# reload = re-read .env without a restart (watchdog-main reload)
+ExecReload=/bin/kill -HUP $MAINPID
 # Always restart: this is also how a downloaded update gets applied.
 Restart=always
 RestartSec=3

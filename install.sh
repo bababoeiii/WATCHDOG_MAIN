@@ -176,6 +176,7 @@ sed -e "s#@NODE@#$NODE#g" -e "s#@NODE_DIR@#$(dirname "$NODE")#g" -e "s#@APP@#$AP
 systemctl daemon-reload
 systemctl enable watchdog-main >/dev/null
 systemctl restart watchdog-main
+chmod +x "$APP/control.sh" && ln -sf "$APP/control.sh" /usr/local/bin/watchdog-main   # the control command
 
 ok=false
 for _ in $(seq 1 20); do
@@ -217,6 +218,7 @@ cat <<EOF
 
 Done.
   Dashboard:   ${PUBLIC_URL}/app/   (open it from the bot in Telegram)
+  Control:     watchdog-main start | restart | reload | test | health
   Logs:        journalctl -u watchdog-main -f
   Settings:    $APP/.env   (change port/domain: sudo bash $APP/install.sh --reconfigure)
   Updates:     automatic from GitHub ($BRANCH), or /update main in Telegram

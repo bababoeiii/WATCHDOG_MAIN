@@ -1,10 +1,29 @@
 // Main server configuration, read from .env
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 
 const APP_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-dotenv.config({ path: process.env.WATCHDOG_ENV_FILE || path.join(APP_DIR, ".env"), quiet: true });
+export const ENV_FILE = process.env.WATCHDOG_ENV_FILE || path.join(APP_DIR, ".env");
+let fromFile = dotenv.config({ path: ENV_FILE, quiet: true }).parsed || {};
+
+/**
+ * Settings that only take effect after a restart (they are used once, at startup).
+ * Everything else changes live on reload (SIGHUP, `watchdog-main reload`).
+ */
+/** .env names of the config keys, for messages (`recipients` is derived, not a setting). */
+export const ENV_NAMES = {
+  botToken: "BOT_TOKEN", adminIds: "ADMIN_IDS", alertChatIds: "ALERT_CHAT_IDS", webappUrl: "WEBAPP_URL",
+  publicUrl: "PUBLIC_URL", host: "HOST", port: "PORT", dataFile: "DATA_FILE", timezone: "TIMEZONE",
+  offlineAfter: "OFFLINE_AFTER_SECONDS", historyMinutes: "HISTORY_MINUTES", reportIntervalMinutes: "HEALTH_REPORT_INTERVAL_MINUTES",
+  cpuAlert: "CPU_ALERT_PERCENT", cpuAlertFor: "CPU_ALERT_FOR_SECONDS", ramAlert: "RAM_ALERT_PERCENT", ramAlertFor: "RAM_ALERT_FOR_SECONDS",
+  diskAlert: "DISK_ALERT_PERCENT", diskAlertFor: "DISK_ALERT_FOR_SECONDS", tempAlert: "TEMP_ALERT_CELSIUS", tempAlertFor: "TEMP_ALERT_FOR_SECONDS",
+  hysteresis: "ALERT_HYSTERESIS", devNoAuth: "DEV_NO_AUTH", subRepo: "SUB_REPO", subBranch: "SUB_BRANCH",
+  autoUpdate: "AUTO_UPDATE", updateCheckMinutes: "UPDATE_CHECK_MINUTES", updateBranch: "UPDATE_BRANCH",
+  githubToken: "UPDATE_GITHUB_TOKEN", subGithubToken: "SUB_GITHUB_TOKEN",
+};
+export const RESTART_KEYS = ["botToken", "host", "port", "dataFile", "devNoAuth", "webappUrl", "autoUpdate", "updateCheckMinutes", "updateBranch", "githubToken"];
 
 const str = (name, def = "") => (process.env[name] ?? def).toString().trim();
 const num = (name, def) => {
@@ -28,7 +47,17 @@ const ids = (name) =>
       return n;
     });
 
-export function loadConfig() {
+/** Read .env again (for a reload). Values from the file win; lines removed from it are dropped. */
+function rereadEnvFile() {
+  const parsed = dotenv.parse(fs.readFileSync(ENV_FILE));
+  for (const k of Object.keys(fromFile)) if (!(k in parsed)) delete process.env[k];
+  Object.assign(process.env, parsed);
+  fromFile = parsed;
+}
+
+/** @returns {{cfg: object, problems: string[]}} */
+export function readConfig({ reload = false } = {}) {
+  if (reload) rereadEnvFile();
   const webappUrl = str("WEBAPP_URL").replace(/\/+$/, "/");
   let publicUrl = str("PUBLIC_URL").replace(/\/+$/, "");
   if (!publicUrl && webappUrl) {
@@ -94,6 +123,11 @@ export function loadConfig() {
   for (const k of ["cpuAlertFor", "ramAlertFor", "diskAlertFor", "tempAlertFor", "reportIntervalMinutes"]) {
     if (!(cfg[k] >= 0)) problems.push(`${k} must be 0 or more`);
   }
+  return { cfg, problems };
+}
+
+export function loadConfig() {
+  const { cfg, problems } = readConfig();
   if (problems.length) {
     console.error("Watchdog config error:\n  - " + problems.join("\n  - "));
     process.exit(1);

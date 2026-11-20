@@ -1,7 +1,7 @@
 // Watchdog main server — entry point.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig } from "./config.js";
+import { ENV_NAMES, loadConfig, readConfig, RESTART_KEYS } from "./config.js";
 import { Store } from "./store.js";
 import { Monitor } from "./monitor.js";
 import { Notifier } from "./notifier.js";
@@ -39,9 +39,13 @@ try {
 }
 const u = monitor.updater;
 // The sub-server project has its own repo: read its branches so /version knows which sub servers are behind.
-if (cfg.subRepo && updaterMod?.remoteHeads) {
-  monitor.fetchSubHeads = () => updaterMod.remoteHeads(cfg.subRepo, { githubToken: cfg.subGithubToken || cfg.githubToken });
+function setSubRepo() {
+  monitor.fetchSubHeads = cfg.subRepo && updaterMod?.remoteHeads
+    ? () => updaterMod.remoteHeads(cfg.subRepo, { githubToken: cfg.subGithubToken || cfg.githubToken })
+    : null;
+  monitor.subHeads = null;
 }
+setSubRepo();
 console.log(u?.enabled ? `Auto-update ${cfg.autoUpdate ? "on" : "off"}: ${u.remote} (${u.branch}) @ ${u.info().commit}` : `Auto-update off: ${u?.reason || "src/updater.js missing"}`);
 
 let restarting = false;
@@ -96,10 +100,35 @@ http.server.listen(cfg.port, cfg.host, () => {
 });
 
 monitor.start();
-if (monitor.fetchSubHeads) {
-  monitor.refreshSubHeads(0);
-  setInterval(() => monitor.refreshSubHeads(0), cfg.updateCheckMinutes * 60_000).unref();
+monitor.refreshSubHeads(0);
+setInterval(() => monitor.refreshSubHeads(0), cfg.updateCheckMinutes * 60_000).unref();
+
+// ---------------------------------------------------------------- reload (.env) without a restart
+// `watchdog-main reload` / `systemctl reload watchdog-main` send SIGHUP. Settings that are only used
+// at startup (RESTART_KEYS) are reported as "needs a restart" and keep their current value.
+function reloadConfig() {
+  let next, problems;
+  try {
+    ({ cfg: next, problems } = readConfig({ reload: true }));
+  } catch (e) {
+    return console.error(`[reload] failed, nothing changed: ${e.code === "ENOENT" ? ".env not found" : e.message}`);
+  }
+  if (problems.length) return console.error(`[reload] failed, nothing changed: ${problems.join("; ")}`);
+  const same = (k) => JSON.stringify(cfg[k]) === JSON.stringify(next[k]);
+  const changed = Object.keys(next).filter((k) => !same(k));
+  const live = changed.filter((k) => !RESTART_KEYS.includes(k));
+  const later = changed.filter((k) => RESTART_KEYS.includes(k));
+  for (const k of live) cfg[k] = next[k];
+  if (live.includes("timezone") && !setTimezone(cfg.timezone)) console.warn(`[reload] unknown TIMEZONE "${cfg.timezone}"`);
+  if (live.some((k) => /Alert/.test(k))) monitor.buildRules();
+  if (live.some((k) => ["subRepo", "subGithubToken"].includes(k))) {
+    setSubRepo();
+    monitor.refreshSubHeads(0);
+  }
+  const names = (keys) => keys.filter((k) => ENV_NAMES[k]).map((k) => ENV_NAMES[k]).join(", ") || "nothing";
+  console.log(`[reload] ok · changed now: ${names(live)} · needs a restart: ${names(later)}`);
 }
+process.on("SIGHUP", reloadConfig);
 u?.start(
   (r) => (r.status === "restart" ? restartForUpdate(r) : null),
   (e) => {

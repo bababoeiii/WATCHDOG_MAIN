@@ -165,6 +165,18 @@ Safety rules:
   tells you.
 - Set `AUTO_UPDATE=false` to update only when you say so (`/update`).
 
+## Control command (on the main server)
+
+The installer adds `watchdog-main` (a link to `control.sh`):
+
+| Command | |
+|---|---|
+| `watchdog-main start` | start the service and wait until it answers |
+| `watchdog-main restart` | restart it |
+| `watchdog-main reload` | re-read `.env` **without a restart**. Alert thresholds, `ALERT_CHAT_IDS`, `ADMIN_IDS`, `TIMEZONE`, `SUB_REPO`, intervals … apply at once; `BOT_TOKEN`, `PORT`, `HOST`, `WEBAPP_URL`, `DATA_FILE` and the auto-update settings are listed as "needs a restart". A broken `.env` is refused and nothing changes |
+| `watchdog-main test` | self-check: `.env`, bot token, admins, notification groups (is the bot in them?), local port, public HTTPS, dashboard, data file, both GitHub repos. Exit code 1 if something failed |
+| `watchdog-main health` | service state (uptime, memory, restarts), errors of the last 24 h, connectivity (local, public, Telegram), sub servers online/offline, version vs. GitHub |
+
 ## Bot commands
 
 | Command | |
@@ -225,5 +237,6 @@ npm test     # login check, report sanitising, tokens, alerts, down detection,
 src/        index, server, monitor, bot, notifier, telegramAuth, store, format, config, updater
 scripts/    setup.js (npm run setup) · nginx.js (npm run nginx [--apply|--remove] → aaPanel site config)
 public/     index.html (Telegram Mini App)
+control.sh  watchdog-main start|restart|reload|test|health · scripts/check.js (the self-check)
 install.sh  aaPanel install · Dockerfile · docker-compose.yml · watchdog-main.service · .env.example
 ```

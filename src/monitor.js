@@ -67,16 +67,7 @@ export class Monitor {
     this.subHeads = null; // { heads, at, error }
     this.runs = new Set(); // updates the bot is following (one server or many), see startUpdateRun()
     this.byToken = new Map(); // tokenHash -> id
-    this.rules = [
-      { key: "cpu", label: "High CPU", unit: "%", threshold: cfg.cpuAlert, duration: cfg.cpuAlertFor,
-        measure: (p) => [p.cpu?.percent, ""] },
-      { key: "ram", label: "High RAM", unit: "%", threshold: cfg.ramAlert, duration: cfg.ramAlertFor,
-        measure: (p) => [p.mem?.percent, ""] },
-      { key: "disk", label: "Disk almost full", unit: "%", threshold: cfg.diskAlert, duration: cfg.diskAlertFor,
-        measure: (p) => { const d = worstDisk(p); return [d?.percent, d?.mount || ""]; } },
-      { key: "temp", label: "High temperature", unit: "°C", threshold: cfg.tempAlert, duration: cfg.tempAlertFor,
-        measure: (p) => [p.temp?.max, p.temp?.max_label || ""] },
-    ].filter((r) => r.threshold > 0);
+    this.buildRules();
 
     for (const s of Object.values(store.servers)) {
       if (s.tokenHash) this.byToken.set(s.tokenHash, s.id);
@@ -85,6 +76,23 @@ export class Monitor {
       if (s.version) s.version = sanitizeVersion(s.version);
     }
     console.log(`Loaded ${Object.keys(store.servers).length} server(s)`);
+  }
+
+  /** Alert rules from the thresholds in cfg (again after a reload; alert state is kept per rule). */
+  buildRules() {
+    this.rules = [
+      { key: "cpu", label: "High CPU", unit: "%", threshold: this.cfg.cpuAlert, duration: this.cfg.cpuAlertFor,
+        measure: (p) => [p.cpu?.percent, ""] },
+      { key: "ram", label: "High RAM", unit: "%", threshold: this.cfg.ramAlert, duration: this.cfg.ramAlertFor,
+        measure: (p) => [p.mem?.percent, ""] },
+      { key: "disk", label: "Disk almost full", unit: "%", threshold: this.cfg.diskAlert, duration: this.cfg.diskAlertFor,
+        measure: (p) => { const d = worstDisk(p); return [d?.percent, d?.mount || ""]; } },
+      { key: "temp", label: "High temperature", unit: "°C", threshold: this.cfg.tempAlert, duration: this.cfg.tempAlertFor,
+        measure: (p) => [p.temp?.max, p.temp?.max_label || ""] },
+    ].filter((r) => r.threshold > 0);
+    // a rule that was switched off (threshold 0) must not leave an alert behind
+    const keys = new Set(this.rules.map((r) => r.key));
+    for (const rt of this.runtime?.values() || []) for (const k of Object.keys(rt.alerts)) if (!keys.has(k)) delete rt.alerts[k];
   }
 
   // ------------------------------------------------------------------ registry & tokens
@@ -527,17 +535,17 @@ export class Monitor {
       }
     }, WATCH_EVERY_MS);
 
-    const interval = this.cfg.reportIntervalMinutes * 60;
-    if (interval > 0) {
-      this.reportTimer = setInterval(() => {
-        const now = nowSec();
-        const last = Number(this.store.getKv("lastReportTs", 0));
-        if (!last) return this.store.setKv("lastReportTs", now);
-        if (now - last < interval) return;
-        this.store.setKv("lastReportTs", now);
-        if (this.list().length) this.notify(this.statusText("🩺 <b>Health report</b>"));
-      }, 30_000);
-    }
+    // reads the interval every time, so a reload can change it (0 = off)
+    this.reportTimer = setInterval(() => {
+      const interval = this.cfg.reportIntervalMinutes * 60;
+      if (!(interval > 0)) return;
+      const now = nowSec();
+      const last = Number(this.store.getKv("lastReportTs", 0));
+      if (!last) return this.store.setKv("lastReportTs", now);
+      if (now - last < interval) return;
+      this.store.setKv("lastReportTs", now);
+      if (this.list().length) this.notify(this.statusText("🩺 <b>Health report</b>"));
+    }, 30_000);
   }
 
   stop() {
