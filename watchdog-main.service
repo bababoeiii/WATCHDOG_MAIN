@@ -1,0 +1,19 @@
+[Unit]
+Description=Watchdog main server (Telegram bot + dashboard)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@APP@
+ExecStart=@NODE@ @APP@/src/index.js
+# Always restart: this is also how a downloaded update gets applied.
+Restart=always
+RestartSec=3
+User=@USER@
+Group=@USER@
+Environment=NODE_ENV=production
+Environment=PATH=@NODE_DIR@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target
