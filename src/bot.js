@@ -1,9 +1,16 @@
 // Telegram bot: status, alerts, token management for sub servers, dashboard launcher.
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, InlineKeyboard, Keyboard } from "grammy";
 import { esc, fmtClock, fmtDateTime, fmtDuration, splitMessage, TELEGRAM_LIMIT } from "./format.js";
 import { RUN_TIMEOUT_MS } from "./monitor.js";
 
 const HTML = { parse_mode: "HTML", link_preview_options: { is_disabled: true } };
+/** Labels of the button bar under the message box (a tap sends exactly this text). */
+export const MENU = {
+  status: "📊 Status", alerts: "⚠️ Alerts", servers: "🖥 Servers", version: "🏷 Version",
+  dashboard: "📈 Dashboard", mute: "🔕 Mute 1h", unmute: "🔔 Unmute", updateAll: "⬆️ Update all",
+};
+/** Bump when the bar changes, so admins get the new one once after an update (sendMenu). */
+export const MENU_VERSION = 1;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const COMMANDS = [
@@ -45,6 +52,19 @@ const HELP =
 export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = null) {
   const bot = new Bot(cfg.botToken, botOptions);
   const isPrivate = (ctx) => ctx.chat?.type === "private";
+
+  /**
+   * The button bar under the message box (Telegram "reply keyboard"), always shown in private chats.
+   * Not in groups: everyone there would see it, and the bot ignores non-admins anyway.
+   * The 🔕/🔔 button shows the current mute state as of the last message that carried the bar.
+   */
+  const menuKeyboard = () => {
+    const kb = new Keyboard().text(MENU.status).text(MENU.alerts).row().text(MENU.servers).text(MENU.version).row();
+    if (cfg.webappUrl) kb.webApp(MENU.dashboard, cfg.webappUrl);
+    else kb.text(MENU.dashboard);
+    return kb.text(notifier.isMuted() ? MENU.unmute : MENU.mute).row().text(MENU.updateAll).persistent().resized();
+  };
+  const withMenu = (ctx) => (isPrivate(ctx) ? { reply_markup: menuKeyboard() } : {});
 
   const statusKeyboard = (ctx) => {
     const kb = new InlineKeyboard().text("🔄 Refresh", "refresh");
@@ -92,9 +112,10 @@ export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = 
     }
   });
 
-  bot.command(["start", "help"], (ctx) => ctx.reply(HELP, { ...HTML, reply_markup: statusKeyboard(ctx) }));
+  bot.command(["start", "help"], (ctx) => ctx.reply(HELP, { ...HTML, reply_markup: isPrivate(ctx) ? menuKeyboard() : statusKeyboard(ctx) }));
 
-  bot.command("status", (ctx) => replyLong(ctx, monitor.statusText(), { reply_markup: statusKeyboard(ctx) }));
+  const showStatus = (ctx) => replyLong(ctx, monitor.statusText(), { reply_markup: statusKeyboard(ctx) });
+  bot.command("status", showStatus);
 
   bot.callbackQuery("refresh", async (ctx) => {
     const text = monitor.statusText();
@@ -110,7 +131,7 @@ export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = 
     await ctx.answerCallbackQuery({ text: "Updated" });
   });
 
-  bot.command("alerts", (ctx) => {
+  const showAlerts = (ctx) => {
     const offline = monitor.list().filter((s) => s.status === "offline");
     const alerts = monitor.activeAlerts();
     if (!offline.length && !alerts.length) return ctx.reply("✅ All clear — no servers down, no active alerts.");
@@ -122,9 +143,10 @@ export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = 
       lines.push(`⚠️ <b>${esc(s.name)}</b>: ${a.label}${where} — ${Math.round(a.value)}${a.unit} (for ${fmtDuration(now - a.since)})`);
     }
     return replyLong(ctx, lines.join("\n"));
-  });
+  };
+  bot.command("alerts", showAlerts);
 
-  bot.command("servers", (ctx) => {
+  const showServers = (ctx) => {
     const list = monitor.list();
     if (!list.length) return ctx.reply("No servers yet. Add one with /add &lt;name&gt;", HTML);
     const icon = { online: "🟢", offline: "🔴", pending: "⚪" };
@@ -135,7 +157,8 @@ export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = 
       lines.push(`    token created ${fmtDateTime(s.tokenCreatedAt)}`);
     }
     return replyLong(ctx, lines.join("\n"));
-  });
+  };
+  bot.command("servers", showServers);
 
   bot.command("add", async (ctx) => {
     if (!isPrivate(ctx)) return ctx.reply("For safety, tokens are only sent in a private chat with the bot.");
@@ -271,6 +294,12 @@ export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = 
     return lines.join("\n");
   };
 
+  /** "⬆️ Update all" from the button bar: show the plan, run after ✅ (same buttons as under /version). */
+  const askUpdateAll = async (ctx) => {
+    ctx.replyWithChatAction("typing").catch(() => {});
+    return replyLong(ctx, await planText(true), { reply_markup: new InlineKeyboard().text("✅ Update now", "upd:all:go").text("Cancel", "cancel") });
+  };
+
   /** Update the main server; with deferRestart the caller restarts it later via result.restartNow(). */
   const mainUpdate = async ({ deferRestart = false } = {}) => {
     if (!updateMain) return { text: "Main server: updates not available" };
@@ -359,10 +388,11 @@ export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = 
       .catch((e) => console.error("update reply failed:", e.message));
   };
 
-  bot.command("version", async (ctx) => {
+  const showVersion = async (ctx) => {
     ctx.replyWithChatAction("typing").catch(() => {});
     return replyLong(ctx, await versionText(), { reply_markup: versionKeyboard() });
-  });
+  };
+  bot.command("version", showVersion);
 
   bot.callbackQuery("ver:refresh", async (ctx) => {
     await ctx.answerCallbackQuery({ text: "Checking GitHub…" });
@@ -420,24 +450,50 @@ export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = 
     return updateOne(ctx, s);
   });
 
-  bot.command("dashboard", (ctx) => {
+  const showDashboard = (ctx) => {
     if (!cfg.webappUrl) return ctx.reply("The dashboard is not configured. Set <code>WEBAPP_URL</code>.", HTML);
     if (!isPrivate(ctx)) return ctx.reply("Open the dashboard from a private chat with the bot.");
     return ctx.reply("📈 Live dashboard:", { reply_markup: new InlineKeyboard().webApp("Open dashboard", cfg.webappUrl) });
-  });
+  };
+  bot.command("dashboard", showDashboard);
 
-  bot.command("mute", (ctx) => {
-    const minutes = ctx.match ? parseInt(ctx.match, 10) : 60;
+  const muteFor = (ctx, minutes) => {
     if (!Number.isFinite(minutes) || minutes <= 0) return ctx.reply("Usage: /mute 60  (minutes)");
     const capped = Math.min(minutes, 60 * 24 * 7);
     const until = notifier.mute(capped);
-    return ctx.reply(`🔕 Notifications muted for ${fmtDuration(capped * 60)} (until ${fmtDateTime(until)}).`);
-  });
-
-  bot.command("unmute", (ctx) => {
+    return ctx.reply(`🔕 Notifications muted for ${fmtDuration(capped * 60)} (until ${fmtDateTime(until)}).`, withMenu(ctx));
+  };
+  const unmute = (ctx) => {
+    const was = notifier.isMuted();
     notifier.unmute();
-    return ctx.reply("🔔 Notifications are on.");
-  });
+    return ctx.reply(was ? "🔔 Notifications are on." : "🔔 Notifications were already on.", withMenu(ctx));
+  };
+  bot.command("mute", (ctx) => muteFor(ctx, ctx.match ? parseInt(ctx.match, 10) : 60));
+  bot.command("unmute", unmute);
+
+  // ---- the button bar under the message box (private chats only; see menuKeyboard)
+  bot.hears(MENU.status, showStatus);
+  bot.hears(MENU.alerts, showAlerts);
+  bot.hears(MENU.servers, showServers);
+  bot.hears(MENU.version, showVersion);
+  bot.hears(MENU.dashboard, showDashboard); // only without WEBAPP_URL; otherwise the button opens the Mini App itself
+  bot.hears(MENU.mute, (ctx) => muteFor(ctx, 60));
+  bot.hears(MENU.unmute, unmute);
+  bot.hears(MENU.updateAll, askUpdateAll);
+
+  /**
+   * Give every admin the button bar once (after an install or when MENU_VERSION changes), so nobody
+   * has to send /start to see it. An admin who never started the bot can't be messaged: skipped.
+   */
+  bot.sendMenu = async () => {
+    if (Number(notifier.store?.getKv("menuVersion", 0)) === MENU_VERSION) return;
+    for (const id of cfg.adminIds) {
+      await bot.api
+        .sendMessage(id, "⌨️ Shortcut buttons are now under the message box. (/help lists every command.)", { reply_markup: menuKeyboard() })
+        .catch((e) => console.log(`button bar not sent to ${id}: ${e.description || e.message}`));
+    }
+    notifier.store?.setKv("menuVersion", MENU_VERSION);
+  };
 
   bot.catch((err) => console.error("bot handler error:", err.error?.message || err.message));
   return bot;

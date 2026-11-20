@@ -179,6 +179,10 @@ The installer adds `watchdog-main` (a link to `control.sh`):
 
 ## Bot commands
 
+In a private chat the bot keeps a button bar under the message box (it appears by itself after an
+install or update; `/start` brings it back): **📊 Status · ⚠️ Alerts · 🖥 Servers · 🏷 Version ·
+📈 Dashboard · 🔕 Mute 1h / 🔔 Unmute · ⬆️ Update all** (asks before it runs). Groups don't get it.
+
 | Command | |
 |---|---|
 | `/add <name>` | create a sub server and get its token (+ installer) |

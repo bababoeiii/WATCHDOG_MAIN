@@ -153,6 +153,7 @@ runBot(realBot, cfg, () => {
   }
   if (now) store.setKv("mainCommit", now);
   store.setKv("lastUpdateError", null);
+  realBot.sendMenu?.().catch((e) => console.error("button bar:", e.message));
 });
 
 let shuttingDown = false;
