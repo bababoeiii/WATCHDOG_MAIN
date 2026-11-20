@@ -177,6 +177,16 @@ The installer adds `watchdog-main` (a link to `control.sh`):
 | `watchdog-main test` | self-check: `.env`, bot token, admins, notification groups (is the bot in them?), local port, public HTTPS, dashboard, data file, both GitHub repos. Exit code 1 if something failed |
 | `watchdog-main health` | service state (uptime, memory, restarts), errors of the last 24 h, connectivity (local, public, Telegram), sub servers online/offline, version vs. GitHub |
 
+Settings in another folder: tell the service where with a drop-in (kept when the installer runs again):
+
+```bash
+mkdir -p /etc/systemd/system/watchdog-main.service.d
+printf '[Service]\nEnvironment=WATCHDOG_ENV_FILE=/www/wwwroot/WATCHDOG/.env\n' > /etc/systemd/system/watchdog-main.service.d/env-file.conf
+systemctl daemon-reload && watchdog-main restart
+```
+
+The service user must be able to read that file, and it must not be inside a folder nginx serves.
+
 ## Bot commands
 
 | Command | |
@@ -202,6 +212,7 @@ Only users in `ADMIN_IDS` can use the bot and dashboard. Tokens are only sent in
 |---|---|---|
 | `SUB_REPO` / `SUB_BRANCH` | — / `main` | GitHub repo of the watchdog-sub project: for the bot's one-line installer, and to know which sub servers are behind. Empty = no one-liner (the `.env` snippet still works) and "behind" falls back to each sub server's own last check |
 | `SUB_GITHUB_TOKEN` | — | only if `SUB_REPO` is private and `UPDATE_GITHUB_TOKEN` can't read it |
+| `WATCHDOG_ENV_FILE` | — | set **in the service**, not in `.env`: another `.env` to read (e.g. `/www/wwwroot/WATCHDOG/.env`). It is merged with the `.env` next to the code and wins; what it doesn't set comes from that one. Used at startup and on every `watchdog-main reload`; if it goes missing, reload is refused. Set it with a systemd drop-in (see below) |
 | `OFFLINE_AFTER_SECONDS` | 30 | silence before a sub server counts as down |
 | `HEALTH_REPORT_INTERVAL_MINUTES` | 360 | 0 turns the report off |
 | `CPU_ALERT_PERCENT` / `_FOR_SECONDS` | 90 / 120 | |
