@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Install (or update) the Watchdog MAIN server on an aaPanel server, behind aaPanel's nginx.
+# Uses aaPanel's Node.js if it has 18+, otherwise installs Node.js 22 (NodeSource; NODE_MAJOR=20 for another).
 #
 # Before running: in aaPanel → Website → Add site → your domain (static, no database),
 #                 then that site → SSL → Let's Encrypt, and turn on Force HTTPS.
 #
 # A) From a clone of your repo:     sudo bash install.sh
 # B) One line, nothing cloned yet:
-#      curl -fsSL https://raw.githubusercontent.com/OWNER/watchdog-main/main/install.sh | sudo bash -s -- \
-#        --repo https://github.com/OWNER/watchdog-main.git
+#      curl -fsSL https://raw.githubusercontent.com/bababoeiii/WATCHDOG_MAIN/main/install.sh | sudo bash -s -- \
+#        --repo https://github.com/bababoeiii/WATCHDOG_MAIN.git
 #
 # Options:
 #   --repo URL            GitHub repository (default: the repo this script is in)
@@ -34,12 +35,32 @@ while [[ $# -gt 0 ]]; do
     --no-nginx) NO_NGINX=true; shift;;
     --user) RUN_USER="$2"; shift 2;;
     --domain|--port|--bot-token|--admin-ids|--timezone) SETUP_ARGS+=("$1" "$2"); shift 2;;
-    -h|--help) sed -n '2,24p' "$0" 2>/dev/null || true; exit 0;;
+    -h|--help) sed -n '2,25p' "$0" 2>/dev/null || true; exit 0;;
     *) echo "Unknown option: $1"; exit 1;;
   esac
 done
 die() { echo "✖ $*" >&2; exit 1; }
 step() { echo; echo "==> $*"; }
+# Install Node.js from NodeSource: distro packages are often older than 18 (Ubuntu 22.04 ships 12).
+# NODE_MAJOR=20 bash install.sh … picks another version. Returns 1 if it can't (unknown package manager).
+install_node() {
+  local major="${NODE_MAJOR:-22}" pm
+  echo "==> Node.js 18+ not found: installing Node.js ${major}.x from NodeSource"
+  if command -v apt-get >/dev/null; then
+    apt-get update -qq || return 1
+    apt-get install -y -qq ca-certificates curl || return 1
+    curl -fsSL "https://deb.nodesource.com/setup_${major}.x" | bash - >/dev/null || return 1
+    apt-get install -y -qq nodejs || return 1
+  elif pm="$(command -v dnf || command -v yum)"; then
+    command -v curl >/dev/null || "$pm" install -y -q curl || return 1
+    "$pm" module disable -y nodejs >/dev/null 2>&1 || true # RHEL 8/9: the AppStream module would win
+    curl -fsSL "https://rpm.nodesource.com/setup_${major}.x" | bash - >/dev/null || return 1
+    "$pm" install -y -q nodejs || return 1
+  else
+    return 1
+  fi
+  hash -r
+}
 
 [[ $EUID -eq 0 ]] || die "Run as root (sudo)."
 
@@ -61,7 +82,11 @@ if [[ -z "$NODE" || $(node_major "$NODE") -lt 18 ]]; then
     if [[ $(node_major "$n") -ge 18 ]]; then NODE="$n"; break; fi
   done
 fi
-[[ -n "$NODE" && $(node_major "$NODE") -ge 18 ]] || die "Node.js 18+ not found. Install it in aaPanel → App Store → Node.js version manager (pick v20), or from https://nodejs.org"
+if [[ -z "$NODE" || $(node_major "$NODE") -lt 18 ]]; then
+  install_node || die "Couldn't install Node.js automatically. Install Node.js 18+ in aaPanel → App Store → Node.js version manager, or from https://nodejs.org, and run this again."
+  NODE="$(command -v node || true)"
+fi
+[[ -n "$NODE" && $(node_major "$NODE") -ge 18 ]] || die "Node.js 18+ not found (found ${NODE:+$("$NODE" -v)}${NODE:-none}). Install it in aaPanel → App Store → Node.js version manager, or from https://nodejs.org"
 NPM="$(dirname "$NODE")/npm"; [[ -x "$NPM" ]] || NPM="$(command -v npm || true)"
 [[ -n "$NPM" ]] || die "npm not found next to $NODE"
 export PATH="$(dirname "$NODE"):$PATH"
@@ -105,7 +130,7 @@ if [[ -n "$REPO" ]]; then
     g clone -q --branch "$BRANCH" "$REPO" "$DIR"
   fi
 else
-  [[ -n "$SRC_DIR" ]] || die "Pass --repo https://github.com/OWNER/REPO.git"
+  [[ -n "$SRC_DIR" ]] || die "Pass --repo https://github.com/bababoeiii/WATCHDOG_MAIN.git"
   step "No git repository found: copying files (auto-update needs a git clone, use --repo)"
   mkdir -p "$APP"
   if [[ "$(realpath "$SRC_DIR")" != "$(realpath -m "$APP")" ]]; then
