@@ -78,6 +78,8 @@ export function loadConfig() {
     updateCheckMinutes: num("UPDATE_CHECK_MINUTES", 30),
     updateBranch: str("UPDATE_BRANCH"),
     githubToken: str("UPDATE_GITHUB_TOKEN"),
+    // only if SUB_REPO is private and UPDATE_GITHUB_TOKEN cannot read it
+    subGithubToken: str("SUB_GITHUB_TOKEN"),
   };
 
   cfg.recipients = [...new Set([...cfg.adminIds, ...cfg.alertChatIds])];

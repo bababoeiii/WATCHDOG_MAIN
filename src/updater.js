@@ -45,6 +45,24 @@ export function parseGithub(url) {
   return m ? { owner: m[1], repo: m[2] } : null;
 }
 
+/**
+ * Newest commit of every branch of a remote repo, without cloning it (`git ls-remote --heads`).
+ * Used by the main server to know the latest sub-server version (that project lives in its own repo).
+ * @returns {Promise<Record<string,string>>} branch → full sha
+ */
+export async function remoteHeads(url, { githubToken = "", timeout = 20_000 } = {}) {
+  const auth = githubToken && /^https:\/\/github\.com\//i.test(String(url))
+    ? ["-c", `http.https://github.com/.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${githubToken}`).toString("base64")}`]
+    : [];
+  const out = await run("git", [...auth, "ls-remote", "--heads", String(url)], { timeout, label: "git ls-remote" });
+  const heads = {};
+  for (const line of out.split("\n")) {
+    const m = /^([0-9a-f]{40})\s+refs\/heads\/(.+)$/.exec(line.trim());
+    if (m) heads[m[2]] = m[1];
+  }
+  return heads;
+}
+
 /** True when a process manager will restart us after we exit (systemd, pm2, or told so). */
 export function isSupervised() {
   return Boolean(process.env.INVOCATION_ID || process.env.pm_id !== undefined || process.env.WATCHDOG_SUPERVISED === "1");

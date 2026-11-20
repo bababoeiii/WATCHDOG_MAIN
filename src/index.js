@@ -38,27 +38,38 @@ try {
   console.log(`Auto-update unavailable: ${e.message}`);
 }
 const u = monitor.updater;
+// The sub-server project has its own repo: read its branches so /version knows which sub servers are behind.
+if (cfg.subRepo && updaterMod?.remoteHeads) {
+  monitor.fetchSubHeads = () => updaterMod.remoteHeads(cfg.subRepo, { githubToken: cfg.subGithubToken || cfg.githubToken });
+}
 console.log(u?.enabled ? `Auto-update ${cfg.autoUpdate ? "on" : "off"}: ${u.remote} (${u.branch}) @ ${u.info().commit}` : `Auto-update off: ${u?.reason || "src/updater.js missing"}`);
 
 let restarting = false;
-function restartForUpdate(r) {
+function restartForUpdate(r, quiet = false) {
   if (!updaterMod?.isSupervised()) {
     notifier.send(`⬆️ Main server updated <code>${r.from}</code> → <code>${r.to}</code>. Restart it to run the new version.`);
     return false;
   }
   if (restarting) return true;
   restarting = true;
-  notifier.send(`⬆️ Main server updated <code>${r.from}</code> → <code>${r.to}</code>, restarting…`);
+  if (!quiet) notifier.send(`⬆️ Main server updated <code>${r.from}</code> → <code>${r.to}</code>, restarting…`);
   setTimeout(() => shutdown("update"), 500);
   return true;
 }
 
-/** Update the main server now (from /update main or the dashboard). */
-async function updateMain(source) {
+/**
+ * Update the main server now (from /update, the bot's buttons or the dashboard).
+ * deferRestart: install but don't restart yet; the caller runs r.restartNow() when it's ready
+ * (the bot first sends its "update all" summary).
+ */
+async function updateMain(source, { deferRestart = false } = {}) {
   if (!u?.enabled) throw new Error(`Auto-update unavailable: ${u?.reason || "not installed from git"}`);
   const r = await u.update();
   console.log(`[update] ${source}: ${r.status}`);
-  if (r.status === "restart") r.restarting = restartForUpdate(r);
+  if (r.status === "restart") {
+    if (!deferRestart) r.restarting = restartForUpdate(r);
+    else if ((r.restarting = Boolean(updaterMod?.isSupervised()))) r.restartNow = () => restartForUpdate(r, true);
+  }
   return { ...r, version: u.info() };
 }
 
@@ -85,6 +96,10 @@ http.server.listen(cfg.port, cfg.host, () => {
 });
 
 monitor.start();
+if (monitor.fetchSubHeads) {
+  monitor.refreshSubHeads(0);
+  setInterval(() => monitor.refreshSubHeads(0), cfg.updateCheckMinutes * 60_000).unref();
+}
 u?.start(
   (r) => (r.status === "restart" ? restartForUpdate(r) : null),
   (e) => {

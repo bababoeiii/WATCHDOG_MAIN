@@ -295,11 +295,12 @@ function openList() {
 
 // ------------------------------------------------------------------ versions
 function versionState(s) {
-  const v = s.version, latest = S.config.latest_commit;
+  // sub servers live in their own repo: compare with that repo's latest (sent per server), not the main server's
+  const v = s.version, latest = v && v.latest;
   if (!v || !v.commit) return null;
   if (s.pending_update) return { text: "update requested", cls: "info" };
   if (v.pending_restart) return { text: "restart pending", cls: "info" };
-  if (latest && v.commit !== latest) return { text: "update available", cls: "info" };
+  if (latest && !v.commit.startsWith(latest) && !latest.startsWith(v.commit)) return { text: "update available", cls: "info" };
   return null;
 }
 function versionFact(s) {

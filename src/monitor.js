@@ -15,6 +15,10 @@ const HISTORY_CAP = 5000;
 const ROUTINE_SAVE_MS = 60_000; // metrics-only changes are written at most once a minute
 const WATCH_EVERY_MS = 5000;
 const nowSec = () => Date.now() / 1000;
+/** Short and full shas of the same commit compare equal. */
+export const sameCommit = (a, b) => Boolean(a && b) && (String(a).startsWith(b) || String(b).startsWith(a));
+/** How long an "update all" waits for the sub servers before sending its summary. */
+export const RUN_TIMEOUT_MS = 5 * 60_000;
 
 export const hashToken = (token) => crypto.createHash("sha256").update(String(token)).digest("hex");
 const newToken = () => "wd_" + crypto.randomBytes(24).toString("base64url");
@@ -57,6 +61,11 @@ export class Monitor {
     this.startedAt = nowSec();
     this.runtime = new Map(); // id -> { history: [], alerts: {} }
     this.updater = null; // the main server's own Updater (set in index.js) — knows the latest commit
+    // The sub-server project lives in its own repo (SUB_REPO): index.js sets fetchSubHeads to read
+    // that repo's branches, so we know the newest sub-server commit without waiting for each server.
+    this.fetchSubHeads = null; // () => Promise<{ branch: sha }>
+    this.subHeads = null; // { heads, at, error }
+    this.runs = new Set(); // updates the bot is following (one server or many), see startUpdateRun()
     this.byToken = new Map(); // tokenHash -> id
     this.rules = [
       { key: "cpu", label: "High CPU", unit: "%", threshold: cfg.cpuAlert, duration: cfg.cpuAlertFor,
@@ -116,6 +125,128 @@ export class Monitor {
   /** Newest commit on GitHub (from the main server's last fetch), or null. */
   latestCommit() {
     return this.updater?.info().latest || null;
+  }
+
+  // ------------------------------------------------------------------ versions (two repos)
+
+  /** Re-read the sub-server repo's branches, at most every maxAge seconds. */
+  async refreshSubHeads(maxAge = 60) {
+    if (!this.fetchSubHeads) return this.subHeads;
+    if (this.subHeads && nowSec() - this.subHeads.at < maxAge) return this.subHeads;
+    this.subHeadsPending ||= this.fetchSubHeads()
+      .then((heads) => (this.subHeads = { heads, at: nowSec(), error: null }))
+      .catch((e) => (this.subHeads = { heads: this.subHeads?.heads || {}, at: nowSec(), error: e.message }))
+      .finally(() => (this.subHeadsPending = null));
+    return this.subHeadsPending;
+  }
+
+  /** Fresh "latest" for both repos (each at most every maxAge s); never waits more than 15 s. */
+  async refreshVersions(maxAge = 60) {
+    const u = this.updater;
+    const main = u?.enabled && !u.busy && (!u.lastCheck || nowSec() - u.lastCheck > maxAge) ? u.check() : null;
+    const limit = new Promise((r) => setTimeout(r, 15_000).unref?.());
+    await Promise.race([Promise.allSettled([main, this.refreshSubHeads(maxAge)]), limit]);
+  }
+
+  /** Newest sub-server commit for the branch this server follows (SUB_REPO, else the server's own last check). */
+  subLatest(s) {
+    const branch = s.version?.branch || this.cfg.subBranch || "main";
+    const sha = this.subHeads?.heads?.[branch];
+    return sha ? sha.slice(0, 7) : s.version?.latest || null;
+  }
+
+  /** @returns {"current"|"behind"|"restart"|"unknown"} */
+  subVersionState(s) {
+    const v = s.version;
+    if (!v?.commit) return "unknown";
+    if (v.pending_restart) return "restart";
+    const latest = this.subLatest(s);
+    if (!latest) return "unknown";
+    return sameCommit(v.commit, latest) ? "current" : "behind";
+  }
+
+  // ------------------------------------------------------------------ updates the bot follows
+
+  /** The followed update a server is part of, if any. */
+  runOf(id) {
+    for (const run of this.runs) if (run.items.has(id)) return run;
+    return null;
+  }
+
+  /**
+   * Ask these sub servers to update and follow each one's result, so the bot can report it
+   * (one summary for many servers, instead of a message per server). run.done resolves with the
+   * results once every online server has one, or after timeoutMs. Offline servers keep their
+   * update request for when they're back. Several runs can go at once, but not for the same server.
+   */
+  startUpdateRun(servers, timeoutMs = RUN_TIMEOUT_MS) {
+    const busy = servers.filter((s) => this.runOf(s.id));
+    if (busy.length) throw new Error(`Already updating: ${busy.map((s) => s.name).join(", ")}`);
+    const items = new Map();
+    for (const s of servers) {
+      const v = s.version || {};
+      const it = { id: s.id, name: s.name, from: v.commit || null, to: null, note: null, deliveredAt: null };
+      if (s.status === "online" && !v.enabled) {
+        it.state = "unavailable";
+        it.note = v.reason || "no version info from this server";
+      } else {
+        it.state = s.status === "online" ? "waiting" : "offline";
+        this.requestUpdate(s.id);
+      }
+      items.set(s.id, it);
+    }
+    let resolve;
+    const run = { items, startedAt: nowSec(), done: new Promise((r) => (resolve = r)) };
+    run.finish = () => {
+      if (!this.runs.has(run)) return;
+      clearTimeout(run.timer);
+      this.runs.delete(run);
+      for (const it of items.values()) {
+        if (it.state !== "waiting") continue;
+        it.state = "timeout";
+        it.note = this.get(it.id)?.version?.error || null;
+      }
+      resolve([...items.values()]);
+    };
+    run.timer = setTimeout(run.finish, timeoutMs);
+    run.timer.unref?.();
+    this.runs.add(run);
+    this.checkRunDone(run);
+    return run;
+  }
+
+  checkRunDone(run) {
+    if (![...run.items.values()].some((it) => it.state === "waiting")) run.finish();
+  }
+
+  /** Called on every report of a server whose update the bot is following. */
+  followRun(run, it, v, delivered, now) {
+    if (it.state === "offline" && delivered) {
+      it.state = "waiting"; // came back during the run
+      it.from = v?.commit || it.from;
+    }
+    if (it.state !== "waiting") return;
+    if (delivered) {
+      // this report picked up the request; its version info is from before the update
+      it.deliveredAt = now;
+      it.checkBefore = v?.last_check ?? null;
+      it.errorBefore = v?.error ?? null;
+      return;
+    }
+    if (!it.deliveredAt || !v) return;
+    if (it.from && v.commit && !sameCommit(v.commit, it.from)) {
+      it.state = "updated";
+      it.to = v.commit;
+    } else if (v.error && v.error !== it.errorBefore) {
+      it.state = "failed";
+      it.note = v.error;
+    } else if ((v.last_check ?? 0) > (it.checkBefore ?? 0) && sameCommit(v.latest, v.commit) && !v.pending_restart) {
+      it.state = "current"; // it checked GitHub after our request and found nothing new
+      it.to = v.commit;
+    } else {
+      return; // still fetching / installing / restarting
+    }
+    this.checkRunDone(run);
   }
 
   requestUpdate(id) {
@@ -190,7 +321,8 @@ export class Monitor {
       last_seen: s.lastSeen,
       offline_reason: s.offlineReason,
       token_created_at: s.tokenCreatedAt,
-      version: s.version || null,
+      // latest = newest commit in the sub-server repo for this server's branch (not the main server's repo)
+      version: s.version ? { ...s.version, latest: this.subLatest(s) } : null,
       pending_update: Boolean(s.pendingUpdate),
       metrics: s.payload,
       alerts: Object.entries(rt.alerts)
@@ -261,9 +393,14 @@ export class Monitor {
       s.offlineReason = null;
     }
 
-    const versionChanged = this.trackVersion(s, sanitizeVersion(raw?.version));
+    const version = sanitizeVersion(raw?.version);
+    const run = this.runOf(s.id);
+    const inRun = run?.items.get(s.id);
+    // while the bot follows this server's update it reports the result itself: no extra messages
+    const versionChanged = this.trackVersion(s, version, Boolean(inRun));
     const update = Boolean(s.pendingUpdate);
     s.pendingUpdate = false;
+    if (inRun) this.followRun(run, inRun, version, update, now);
 
     const alertsChanged = this.evaluateAlerts(s, now);
     // status/version/flag changes are saved right away; plain metrics at most once a minute
@@ -274,18 +411,19 @@ export class Monitor {
   }
 
   /** @returns {boolean} whether anything worth saving changed */
-  trackVersion(s, v) {
+  trackVersion(s, v, quiet = false) {
     if (!v) return false;
     const prev = s.version || {};
-    if (prev.commit && v.commit && prev.commit !== v.commit) {
+    if (!quiet && prev.commit && v.commit && prev.commit !== v.commit) {
       this.notify(`⬆️ ${nameHtml(s)} updated <code>${esc(prev.commit)}</code> → <code>${esc(v.commit)}</code>`);
     }
-    if (v.error && v.error !== prev.error) {
+    if (!quiet && v.error && v.error !== prev.error) {
       this.notify(`❗ ${nameHtml(s)}: update failed\n${esc(v.error)}`, true);
     }
     const next = {
       commit: v.commit, branch: v.branch, enabled: v.enabled, auto: v.auto,
       reason: v.reason, error: v.error, app: v.app, pending_restart: v.pending_restart,
+      latest: v.latest, last_check: v.last_check, // what the server itself last saw on GitHub
     };
     const changed = JSON.stringify(next) !== JSON.stringify(s.version || null);
     s.version = next;

@@ -1,6 +1,7 @@
 // Telegram bot: status, alerts, token management for sub servers, dashboard launcher.
 import { Bot, InlineKeyboard } from "grammy";
 import { esc, fmtClock, fmtDateTime, fmtDuration, splitMessage, TELEGRAM_LIMIT } from "./format.js";
+import { RUN_TIMEOUT_MS } from "./monitor.js";
 
 const HTML = { parse_mode: "HTML", link_preview_options: { is_disabled: true } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -13,7 +14,7 @@ export const COMMANDS = [
   { command: "token", description: "New token for a server: /token web-1" },
   { command: "remove", description: "Remove a server: /remove web-1" },
   { command: "version", description: "Versions of main + sub servers" },
-  { command: "update", description: "Update from GitHub: /update all | main | <name>" },
+  { command: "update", description: "Update from GitHub: /update all | subs | main | <name>" },
   { command: "dashboard", description: "Open the live dashboard" },
   { command: "mute", description: "Mute notifications: /mute 60" },
   { command: "unmute", description: "Turn notifications back on" },
@@ -34,7 +35,10 @@ const HELP =
   "/mute 60 · /unmute — silence notifications\n\n" +
   "<b>Updates</b> (from your GitHub repo)\n" +
   "/version — which version each server runs\n" +
-  "/update all · /update main · /update &lt;name&gt; — update now\n\n" +
+  "/update all — both sides: sub servers, then the main server, one summary\n" +
+  "/update subs — all sub servers only, one summary\n" +
+  "/update main · /update &lt;name&gt; — just the main server / one sub server\n" +
+  "(/version has buttons for all of these, plus one per sub server that is behind)\n\n" +
   "To connect a server: /add it here, then put the two lines you get into the <code>.env</code> " +
   "of the sub-server project on that machine and start it.";
 
@@ -189,75 +193,231 @@ export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = 
   });
 
   // ---- versions & updates
-  bot.command("version", (ctx) => {
-    const latest = monitor.latestCommit();
+  // The main server and the sub servers live in two repos (WATCHDOG_MAIN / WATCHDOG_SUB):
+  // each side is compared with the latest commit of its own repo.
+  const repoName = (url) => (/github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(String(url || "")) || [])[1] || String(url || "");
+  const subMark = (s) => {
+    const st = monitor.subVersionState(s);
+    if (st === "behind") return ` ⬆️ behind (latest <code>${esc(monitor.subLatest(s))}</code>)`;
+    return st === "current" ? " ✅" : st === "restart" ? " ⏳ restart pending" : "";
+  };
+  const mainMark = (mv) =>
+    !mv.latest ? "" : mv.commit === mv.latest ? " ✅" : mv.pending_restart ? " ⏳ restart pending" : ` ⬆️ behind (latest <code>${mv.latest}</code>)`;
+  const subServers = () => monitor.list().filter((s) => s.status !== "pending");
+
+  const versionText = async () => {
+    await monitor.refreshVersions();
     const mv = monitor.updater?.info();
     const lines = ["🏷 <b>Versions</b>", ""];
     if (mv?.enabled) {
-      const state = !latest ? "" : mv.commit === latest ? " ✅" : mv.pending_restart ? " ⏳ restart pending" : ` ⬆️ behind (latest <code>${latest}</code>)`;
-      lines.push(`<b>Main server</b>: <code>${mv.commit}</code> on ${esc(mv.branch)}${state}`);
-      lines.push(`    ${esc(mv.remote)} · auto-update ${mv.auto ? "on" : "off"}`);
+      lines.push(`<b>Main server</b>: <code>${mv.commit}</code> on ${esc(mv.branch)}${mainMark(mv)}`);
+      lines.push(`    ${esc(repoName(mv.remote))} · auto-update ${mv.auto ? "on" : "off"}`);
       if (mv.error) lines.push(`    ❗ ${esc(mv.error)}`);
     } else {
       lines.push(`<b>Main server</b>: auto-update off (${esc(mv?.reason || "not a git install")})`);
     }
-    lines.push("");
+    lines.push("", `<b>Sub servers</b>${cfg.subRepo ? ` · ${esc(repoName(cfg.subRepo))}` : ""}`);
+    if (!cfg.subRepo) lines.push("    <i>SUB_REPO not set: \"behind\" uses each server's own last check</i>");
+    else if (monitor.subHeads?.error) lines.push(`    ❗ can't read SUB_REPO: ${esc(monitor.subHeads.error)}`);
     for (const s of monitor.list()) {
       const v = s.version;
       let state;
       if (s.status === "pending") state = "never connected";
       else if (!v?.commit) state = `no version info${v?.reason ? ` (${esc(v.reason)})` : ""}`;
-      else {
-        // Sub servers live in their own repo: compare against their own latest, not the main server's.
-        const mark = !v.latest ? "" : v.commit === v.latest ? " ✅" : v.pending_restart ? " ⏳ restart pending" : " ⬆️ behind";
-        state = `<code>${esc(v.commit)}</code>${mark}${v.auto === false ? " · manual updates" : ""}`;
-      }
+      else state = `<code>${esc(v.commit)}</code>${subMark(s)}${v.auto === false ? " · manual updates" : ""}`;
       lines.push(`${s.status === "online" ? "🟢" : s.status === "pending" ? "⚪" : "🔴"} <b>${esc(s.name)}</b>: ${state}${s.pendingUpdate ? " · update requested" : ""}`);
       if (v?.error) lines.push(`    ❗ ${esc(v.error)}`);
     }
-    if (latest) lines.push("", `Latest main-server on GitHub: <code>${latest}</code>`);
-    return replyLong(ctx, lines.join("\n"));
+    if (!monitor.list().length) lines.push("    none yet — /add &lt;name&gt;");
+    return lines.join("\n");
+  };
+  /** /version buttons: refresh, both sides, only the sub servers, and one per sub server that is behind. */
+  const versionKeyboard = () => {
+    const kb = new InlineKeyboard().text("🔄 Refresh", "ver:refresh").row().text("⬆️ Update all", "upd:all").text("⬆️ Update subs", "upd:subs");
+    const behind = monitor.list().filter((s) => s.version?.enabled && monitor.subVersionState(s) === "behind").slice(0, 20);
+    behind.forEach((s, i) => {
+      if (i % 2 === 0) kb.row();
+      kb.text(`⬆️ ${s.name}`, `upd:s:${s.id}`);
+    });
+    return kb;
+  };
+
+  /** What "update all" (withMain) or "update subs" would do, shown before it runs. */
+  const planText = async (withMain) => {
+    await monitor.refreshVersions();
+    const lines = withMain
+      ? ["⬆️ <b>Update everything?</b>", "", "Sub servers first, then the main server (it restarts last).", ""]
+      : ["⬆️ <b>Update all sub servers?</b>", "", "The main server is left as it is.", ""];
+    const subs = subServers();
+    for (const s of subs) {
+      const v = s.version;
+      let what;
+      if (s.status !== "online") what = "offline — updates when it's back";
+      else if (!v?.enabled) what = `auto-update unavailable${v?.reason ? ` (${esc(v.reason)})` : ""}`;
+      else {
+        const st = monitor.subVersionState(s);
+        what = st === "behind" ? `<code>${esc(v.commit)}</code> → <code>${esc(monitor.subLatest(s))}</code>` : st === "current" ? "up to date" : "will check GitHub";
+      }
+      lines.push(`• <b>${esc(s.name)}</b>: ${what}`);
+    }
+    if (!subs.length) lines.push("• no connected sub servers");
+    if (withMain) {
+      const mv = monitor.updater?.info();
+      const main = !mv?.enabled
+        ? `auto-update off (${esc(mv?.reason || "not a git install")})`
+        : mv.latest && mv.commit !== mv.latest ? `<code>${mv.commit}</code> → <code>${mv.latest}</code>` : mv.latest ? "up to date" : "will check GitHub";
+      lines.push(`• <b>Main server</b>: ${main}`);
+    }
+    return lines.join("\n");
+  };
+
+  /** Update the main server; with deferRestart the caller restarts it later via result.restartNow(). */
+  const mainUpdate = async ({ deferRestart = false } = {}) => {
+    if (!updateMain) return { text: "Main server: updates not available" };
+    try {
+      const r = await updateMain("telegram", { deferRestart });
+      if (r.status === "up-to-date") return { text: `Main server: already up to date (<code>${r.version.commit}</code>)` };
+      if (r.status === "busy") return { text: "Main server: an update is already running" };
+      if (r.status === "updated") return { text: `Main server: pulled <code>${r.from}</code> → <code>${r.to}</code> (no main-server changes, no restart)` };
+      return {
+        text: r.restarting ? `Main server: updating <code>${r.from}</code> → <code>${r.to}</code>, restarting…` : `Main server: updated to <code>${r.to}</code>, restart it to apply`,
+        restartNow: r.restartNow,
+      };
+    } catch (e) {
+      return { text: `Main server: ❗ ${esc(e.message)}` };
+    }
+  };
+
+  const RESULT = {
+    updated: (it) => `✅ <b>${esc(it.name)}</b>: <code>${esc(it.from)}</code> → <code>${esc(it.to)}</code>`,
+    current: (it) => `➖ <b>${esc(it.name)}</b>: already up to date (<code>${esc(it.to)}</code>)`,
+    failed: (it) => `❗ <b>${esc(it.name)}</b>: failed, rolled back — ${esc(it.note)}`,
+    offline: (it) => `🔴 <b>${esc(it.name)}</b>: offline — updates when it comes back`,
+    unavailable: (it) => `⏸ <b>${esc(it.name)}</b>: auto-update unavailable (${esc(it.note)})`,
+    timeout: (it) => `⏱ <b>${esc(it.name)}</b>: no result after ${RUN_TIMEOUT_MS / 60_000} min${it.note ? ` (last error: ${esc(it.note)})` : ""}`,
+  };
+  const summaryText = (results, mainLine) => {
+    const count = (st) => results.filter((it) => it.state === st).length;
+    const parts = [["updated", "updated"], ["current", "up to date"], ["failed", "failed"], ["offline", "offline"], ["timeout", "no result"], ["unavailable", "unavailable"]]
+      .map(([st, label]) => (count(st) ? `${count(st)} ${label}` : null))
+      .filter(Boolean);
+    const lines = ["⬆️ <b>Update summary</b>", ""];
+    if (results.length) {
+      lines.push(`<b>Sub servers</b>: ${parts.join(" · ")}`);
+      for (const it of results) lines.push(RESULT[it.state](it));
+    } else {
+      lines.push("<b>Sub servers</b>: none connected");
+    }
+    if (mainLine) lines.push("", mainLine);
+    return lines.join("\n");
+  };
+
+  /**
+   * Every sub server, wait for their results, then (withMain) the main server; one summary at the end.
+   * withMain = false: only the sub servers ("update subs").
+   */
+  const updateMany = async (ctx, withMain) => {
+    const subs = subServers();
+    let run = null;
+    try {
+      run = subs.length ? monitor.startUpdateRun(subs) : null;
+    } catch (e) {
+      return ctx.reply(`⏳ ${esc(e.message)} — wait for that result first.`, HTML);
+    }
+    if (!subs.length && !withMain) return ctx.reply("No connected sub servers.");
+    const waitNote = `One summary follows when they're done (at most ${RUN_TIMEOUT_MS / 60_000} min).`;
+    await ctx.reply(
+      !subs.length
+        ? "⬆️ No connected sub servers — updating the main server…"
+        : withMain
+          ? `⬆️ Updating ${subs.length} sub server(s) first, then the main server.\n${waitNote}`
+          : `⬆️ Updating ${subs.length} sub server(s); the main server is left as it is.\n${waitNote}`,
+    );
+    (async () => {
+      const results = run ? await run.done : [];
+      const main = withMain ? await mainUpdate({ deferRestart: true }) : null;
+      await replyLong(ctx, summaryText(results, main?.text)).catch((e) => console.error("update summary failed:", e.message));
+      main?.restartNow?.(); // restart only once the summary is out
+    })().catch((e) => console.error("update failed:", e.message));
+  };
+
+  /** One sub server; replies with its result (updated / up to date / failed + reason). */
+  const updateOne = async (ctx, s) => {
+    if (s.status === "pending") return ctx.reply(`<b>${esc(s.name)}</b> has never connected yet.`, HTML);
+    let run;
+    try {
+      run = monitor.startUpdateRun([s]);
+    } catch {
+      return ctx.reply(`⏳ <b>${esc(s.name)}</b> is already updating — its result is on the way.`, HTML);
+    }
+    const it = run.items.get(s.id);
+    if (it.state === "waiting") {
+      await ctx.reply(`⬆️ Updating <b>${esc(s.name)}</b>… you'll get the result here (at most ${RUN_TIMEOUT_MS / 60_000} min).`, HTML);
+    }
+    run.done
+      .then(([res]) => ctx.reply(RESULT[res.state](res), HTML))
+      .catch((e) => console.error("update reply failed:", e.message));
+  };
+
+  bot.command("version", async (ctx) => {
+    ctx.replyWithChatAction("typing").catch(() => {});
+    return replyLong(ctx, await versionText(), { reply_markup: versionKeyboard() });
+  });
+
+  bot.callbackQuery("ver:refresh", async (ctx) => {
+    await ctx.answerCallbackQuery({ text: "Checking GitHub…" });
+    const text = await versionText();
+    if (text.length > TELEGRAM_LIMIT - 96) return replyLong(ctx, text, { reply_markup: versionKeyboard() });
+    await ctx.editMessageText(text, { ...HTML, reply_markup: versionKeyboard() }).catch(() => {}); // not modified
+  });
+
+  // "Update all" / "Update subs": show what would change, run after ✅
+  bot.callbackQuery(/^upd:(all|subs)$/, async (ctx) => {
+    await ctx.answerCallbackQuery({ text: "Checking GitHub…" });
+    const which = ctx.match[1];
+    const text = await planText(which === "all");
+    const kb = new InlineKeyboard().text("✅ Update now", `upd:${which}:go`).text("Cancel", "cancel");
+    if (text.length > TELEGRAM_LIMIT - 96) return replyLong(ctx, text, { reply_markup: kb });
+    await ctx.editMessageText(text, { ...HTML, reply_markup: kb }).catch(() => replyLong(ctx, text, { reply_markup: kb }));
+  });
+
+  bot.callbackQuery(/^upd:(all|subs):go$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageReplyMarkup().catch(() => {}); // no double taps
+    return updateMany(ctx, ctx.match[1] === "all");
+  });
+
+  // one sub server, straight away (from the buttons under /version)
+  bot.callbackQuery(/^upd:s:(.+)$/, async (ctx) => {
+    const s = monitor.get(ctx.match[1]);
+    if (!s) return ctx.answerCallbackQuery({ text: "Server no longer exists" });
+    await ctx.answerCallbackQuery({ text: `Updating ${s.name}…` });
+    return updateOne(ctx, s);
   });
 
   bot.command("update", async (ctx) => {
     const arg = (ctx.match || "").trim();
     if (!arg) {
       return ctx.reply(
-        "Usage:\n/update all — every sub server, then the main server\n/update main — only the main server\n/update &lt;name&gt; — one sub server",
+        "Usage:\n/update all — every sub server, then the main server, one summary at the end\n" +
+          "/update subs — every sub server, one summary (main server untouched)\n" +
+          "/update main — only the main server\n/update &lt;name&gt; — one sub server, with its result\n\n" +
+          "Or use the buttons under /version.",
         HTML,
       );
     }
-    const doMain = async () => {
-      if (!updateMain) return "Main server: updates not available";
-      try {
-        const r = await updateMain("telegram");
-        if (r.status === "up-to-date") return `Main server: already up to date (<code>${r.version.commit}</code>)`;
-        if (r.status === "busy") return "Main server: an update is already running";
-        if (r.status === "updated") return `Main server: pulled <code>${r.from}</code> → <code>${r.to}</code> (no main-server changes, no restart)`;
-        return r.restarting ? `Main server: updating <code>${r.from}</code> → <code>${r.to}</code>, restarting…` : `Main server: updated to <code>${r.to}</code>, restart it to apply`;
-      } catch (e) {
-        return `Main server: ❗ ${esc(e.message)}`;
-      }
-    };
-    // git fetch / npm ci can take a while: answer now, report the result in a second message
-    const mainInBackground = async () => {
-      const result = await doMain();
-      await ctx.reply(result, HTML).catch((e) => console.error("update reply failed:", e.message));
-    };
-    if (arg.toLowerCase() === "main") {
+    const a = arg.toLowerCase();
+    if (a === "all") return updateMany(ctx, true);
+    if (a === "subs") return updateMany(ctx, false);
+    if (a === "main") {
       await ctx.reply("⬆️ Checking GitHub for a main server update…");
-      mainInBackground();
+      // git fetch / npm ci can take a while: answer now, report the result in a second message
+      mainUpdate().then((m) => ctx.reply(m.text, HTML)).catch((e) => console.error("update reply failed:", e.message));
       return;
     }
-
-    const targets = arg.toLowerCase() === "all" ? monitor.list().filter((s) => s.status !== "pending") : [monitor.find(arg)].filter(Boolean);
-    if (!targets.length) return arg.toLowerCase() === "all" ? ctx.reply("No connected sub servers.") : unknown(ctx, arg);
-    for (const s of targets) monitor.requestUpdate(s.id);
-    const names = targets.map((s) => `<b>${esc(s.name)}</b>`).join(", ");
-    let text = `⬆️ Update requested for ${names}.\nOnline servers pull it on their next report (a few seconds); offline ones when they come back. You'll get a message for each one that updates.`;
-    if (arg.toLowerCase() === "all") text += "\n\nChecking the main server too…";
-    await replyLong(ctx, text);
-    if (arg.toLowerCase() === "all") mainInBackground();
+    const s = monitor.find(arg);
+    if (!s) return unknown(ctx, arg);
+    return updateOne(ctx, s);
   });
 
   bot.command("dashboard", (ctx) => {

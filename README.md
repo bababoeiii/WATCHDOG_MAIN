@@ -150,10 +150,11 @@ new one, and the old token stops working immediately.
 |---|---|
 | automatic | every `UPDATE_CHECK_MINUTES` (30) the main server runs `git fetch`; if `main` moved, it updates itself |
 | `/update main` | the main server updates now |
-| `/update all` | every sub server updates on its next report (seconds), then the main server |
-| `/update web-1` | just that sub server (it pulls from the watchdog-sub repo) |
+| `/update all` (or **⬆️ Update all** under `/version`) | both sides: every sub server updates on its next report (seconds); once they're done (at most 5 min) the main server updates. You get **one summary** (updated / up to date / failed / offline / no result) instead of a message per server, and the main server restarts only after the summary is sent. The button asks for confirmation and shows what would change first |
+| `/update subs` (or **⬆️ Update subs** under `/version`) | every sub server, one summary; the main server is left as it is. The button asks for confirmation first |
+| `/update web-1` (or the **⬆️ web-1** button under `/version`, shown for each sub server that is behind) | just that sub server (it pulls from the watchdog-sub repo); the bot replies with the result: updated `a → b`, already up to date, or failed + reason |
 | dashboard | **⬆ Update from GitHub** on a server's page; **Update** next to the main server version at the bottom |
-| `/version` | which commit the main server runs, and which commit each sub server runs (each compared against its own repo's latest) |
+| `/version` | which commit the main server runs, and which commit each sub server runs, each compared against **its own repo's** latest: the main server reads `SUB_REPO` (`git ls-remote`, every `UPDATE_CHECK_MINUTES` and when you open `/version`), so it knows a sub server is behind without waiting for that server's own check. **🔄 Refresh** checks GitHub again |
 
 An update goes like this: fetch → `git reset --hard origin/main` → `npm ci` if dependencies changed → `node
 --check` on every source file → restart. If any step fails, the server goes back to the commit it was on,
@@ -175,7 +176,7 @@ Safety rules:
 | `/status` | CPU / RAM / disk / temp of every server |
 | `/alerts` | servers down + active alerts |
 | `/version` | versions vs. each project's GitHub repo |
-| `/update all \| main \| <name>` | update now |
+| `/update all \| subs \| main \| <name>` | update now (`all` = both sides, `subs` = all sub servers; one summary) |
 | `/dashboard` | open the live dashboard |
 | `/mute 60` · `/unmute` | silence notifications |
 
@@ -187,7 +188,8 @@ Only users in `ADMIN_IDS` can use the bot and dashboard. Tokens are only sent in
 
 | Variable | Default | |
 |---|---|---|
-| `SUB_REPO` / `SUB_BRANCH` | — / `main` | GitHub repo of the watchdog-sub project, for the bot's one-line installer. Empty = no one-liner (the `.env` snippet still works) |
+| `SUB_REPO` / `SUB_BRANCH` | — / `main` | GitHub repo of the watchdog-sub project: for the bot's one-line installer, and to know which sub servers are behind. Empty = no one-liner (the `.env` snippet still works) and "behind" falls back to each sub server's own last check |
+| `SUB_GITHUB_TOKEN` | — | only if `SUB_REPO` is private and `UPDATE_GITHUB_TOKEN` can't read it |
 | `OFFLINE_AFTER_SECONDS` | 30 | silence before a sub server counts as down |
 | `HEALTH_REPORT_INTERVAL_MINUTES` | 360 | 0 turns the report off |
 | `CPU_ALERT_PERCENT` / `_FOR_SECONDS` | 90 / 120 | |

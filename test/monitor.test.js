@@ -154,3 +154,84 @@ test("a malicious report is stored sanitised", () => {
   assert.equal(s.payload.cpu.percent, null);
   assert.equal(s.payload.procs.top_cpu[0].pid, 0);
 });
+
+// ---- two repos: sub servers are compared with the sub-server repo, and "update all" follows each server
+
+test("sub servers are compared with the sub-server repo, not the main server's", async () => {
+  const s = mon.addServer("web-1").server;
+  step(0, s, { extra: { version: { commit: "aaa1111", branch: "main", enabled: true, latest: "aaa1111" } } });
+  assert.equal(mon.subVersionState(s), "current"); // no SUB_REPO: the server's own last check
+  mon.fetchSubHeads = async () => ({ main: "bbb2222" + "0".repeat(33) });
+  await mon.refreshSubHeads(0);
+  assert.equal(mon.subLatest(s), "bbb2222");
+  assert.equal(mon.subVersionState(s), "behind");
+  assert.equal(mon.summary(s).version.latest, "bbb2222"); // what the dashboard compares with
+  mon.fetchSubHeads = async () => { throw new Error("repo not found"); };
+  await mon.refreshSubHeads(0);
+  assert.equal(mon.subHeads.error, "repo not found");
+  assert.equal(mon.subLatest(s), "bbb2222"); // keeps the last good answer
+});
+
+test("update all: one result per server, no per-server messages, offline/unavailable don't block", async () => {
+  const v = (commit, o = {}) => ({ extra: { version: { commit, branch: "main", enabled: true, latest: commit, last_check: 100, ...o } } });
+  const a = mon.addServer("a").server, b = mon.addServer("b").server, c = mon.addServer("c").server;
+  const d = mon.addServer("d").server, e = mon.addServer("e").server;
+  for (const s of [a, b, c, d, e]) step(0, s, v("aaa1111"));
+  step(0, d, { extra: { version: { enabled: false, reason: "not installed from a git clone" } } });
+  mon.handleGoodbye(e, "agent_stopped");
+  const before = msgs.length;
+
+  const run = mon.startUpdateRun([a, b, c, d, e], 60_000);
+  assert.throws(() => mon.startUpdateRun([a]), /Already updating: a/);
+  assert.equal(step(1, a, v("aaa1111")).update, true); // request delivered
+  assert.equal(step(0, b, v("aaa1111")).update, true);
+  assert.equal(step(0, c, v("aaa1111")).update, true);
+  step(1, a, v("aaa1111", { latest: "bbb2222", last_check: 200 })); // fetched, installing…
+  step(2, a, v("bbb2222", { last_check: 200 }));                    // restarted on the new code
+  step(1, b, v("aaa1111", { last_check: 200 }));                    // checked: nothing new
+  step(1, c, v("aaa1111", { latest: "bbb2222", last_check: 200, error: "npm install failed: x" }));
+
+  const results = Object.fromEntries((await run.done).map((it) => [it.name, it]));
+  assert.equal(results.a.state, "updated");
+  assert.equal(results.a.to, "bbb2222");
+  assert.equal(results.b.state, "current");
+  assert.equal(results.c.state, "failed");
+  assert.equal(results.d.state, "unavailable");
+  assert.equal(results.e.state, "offline");
+  assert.equal(e.pendingUpdate, true); // still gets it when it's back
+  assert.equal(mon.runs.size, 0);
+  assert.equal(msgs.slice(before).filter((m) => /updated|update failed/.test(m.t)).length, 0);
+  step(1, a, v("ccc3333")); // after the run, normal messages again
+  assert.match(msgs.at(-1).t, /updated/);
+});
+
+test("update all: servers without a result are reported after the timeout", async () => {
+  const a = mon.addServer("a").server;
+  step(0, a, { extra: { version: { commit: "aaa1111", enabled: true, error: "fetch failed" } } });
+  clock.restore(); // real timers for the timeout
+  const run = mon.startUpdateRun([a], 50);
+  const keepAlive = setTimeout(() => {}, 1000); // the run's own timer is unref'd
+  const [it] = await run.done;
+  clearTimeout(keepAlive);
+  assert.equal(it.state, "timeout");
+  assert.equal(it.note, "fetch failed");
+  clock = fakeClock();
+});
+
+test("followed updates: one server at a time each, different servers in parallel", async () => {
+  const v = (commit, o = {}) => ({ extra: { version: { commit, branch: "main", enabled: true, latest: commit, last_check: 100, ...o } } });
+  const a = mon.addServer("a").server, b = mon.addServer("b").server;
+  step(0, a, v("aaa1111"));
+  step(0, b, v("aaa1111"));
+  const ra = mon.startUpdateRun([a], 60_000);
+  const rb = mon.startUpdateRun([b], 60_000); // a different server: fine
+  assert.throws(() => mon.startUpdateRun([a, b]), /Already updating: a, b/);
+  step(1, a, v("aaa1111"));
+  step(0, b, v("aaa1111"));
+  step(1, b, v("bbb2222"));
+  assert.equal((await rb.done)[0].state, "updated");
+  assert.equal(mon.runs.size, 1); // a is still going
+  step(1, a, v("aaa1111", { last_check: 200 }));
+  assert.equal((await ra.done)[0].state, "current");
+  assert.equal(mon.runs.size, 0);
+});
