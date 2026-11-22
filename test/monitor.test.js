@@ -9,7 +9,8 @@ const setup = (cfgOver = {}) => {
   const cfg = testConfig(cfgOver);
   store = new Store(cfg.dataFile);
   msgs = [];
-  mon = new Monitor(cfg, store, (t, important) => msgs.push({ t: t.split("\n")[0], important }), () => {});
+  // like index.js: telegram: false = only logged for the portal, not sent
+  mon = new Monitor(cfg, store, (t, important, meta = {}) => meta.telegram !== false && msgs.push({ t: t.split("\n")[0], important, meta }), () => {});
   return cfg;
 };
 const silence = () => {
@@ -143,8 +144,8 @@ test("version changes and update failures are reported once", () => {
   step(5, s, { extra: { version: { commit: "bbb2222", enabled: true, error: "boom" } } });
   assert.equal(msgs.filter((m) => /update failed/.test(m.t)).length, 1);
   mon.requestUpdate(s.id);
-  assert.deepEqual(step(5, s), { update: true });
-  assert.deepEqual(step(5, s), { update: false });
+  assert.deepEqual(step(5, s), { update: true, reboot: false });
+  assert.deepEqual(step(5, s), { update: false, reboot: false });
 });
 
 test("a malicious report is stored sanitised", () => {

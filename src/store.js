@@ -1,4 +1,4 @@
-// Tiny JSON-file store: servers (with hashed tokens) and a few settings.
+// Tiny JSON-file store: servers (with hashed tokens), portal accounts + sessions, and a few settings.
 // Writes are debounced and atomic (write a temp file, then rename).
 import fs from "node:fs";
 import path from "node:path";
@@ -9,7 +9,7 @@ const dict = (src) => Object.assign(Object.create(null), src && typeof src === "
 export class Store {
   constructor(file) {
     this.file = file;
-    this.data = { servers: dict(), kv: dict() };
+    this.data = { servers: dict(), kv: dict(), accounts: dict(), sessions: dict() };
     this.timer = null;
     this.dueAt = 0;
     fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
@@ -18,6 +18,8 @@ export class Store {
         const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
         this.data.servers = dict(parsed.servers);
         this.data.kv = dict(parsed.kv);
+        this.data.accounts = dict(parsed.accounts);
+        this.data.sessions = dict(parsed.sessions);
       } catch (e) {
         const backup = `${file}.corrupt-${Date.now()}`;
         fs.renameSync(file, backup);

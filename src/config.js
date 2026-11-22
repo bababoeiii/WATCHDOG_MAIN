@@ -22,8 +22,10 @@ export const ENV_NAMES = {
   hysteresis: "ALERT_HYSTERESIS", devNoAuth: "DEV_NO_AUTH", subRepo: "SUB_REPO", subBranch: "SUB_BRANCH",
   autoUpdate: "AUTO_UPDATE", updateCheckMinutes: "UPDATE_CHECK_MINUTES", updateBranch: "UPDATE_BRANCH",
   githubToken: "UPDATE_GITHUB_TOKEN", subGithubToken: "SUB_GITHUB_TOKEN",
+  notifyHistoryDays: "NOTIFY_HISTORY_DAYS", sessionDays: "PORTAL_SESSION_DAYS", smtpHost: "SMTP_HOST", smtpPort: "SMTP_PORT",
+  smtpUser: "SMTP_USER", smtpPass: "SMTP_PASS", smtpFrom: "SMTP_FROM", smtpSecure: "SMTP_SECURE",
 };
-export const RESTART_KEYS = ["botToken", "host", "port", "dataFile", "devNoAuth", "webappUrl", "autoUpdate", "updateCheckMinutes", "updateBranch", "githubToken"];
+export const RESTART_KEYS = ["botToken", "host", "port", "dataFile", "devNoAuth", "webappUrl", "autoUpdate", "updateCheckMinutes", "updateBranch", "githubToken", "notifyHistoryDays"];
 
 const str = (name, def = "") => (process.env[name] ?? def).toString().trim();
 const num = (name, def) => {
@@ -107,6 +109,16 @@ export function readConfig({ reload = false } = {}) {
     updateCheckMinutes: num("UPDATE_CHECK_MINUTES", 30),
     updateBranch: str("UPDATE_BRANCH"),
     githubToken: str("UPDATE_GITHUB_TOKEN"),
+
+    // web portal (/portal/): notification history, accounts, e-mail login codes
+    notifyHistoryDays: num("NOTIFY_HISTORY_DAYS", 30),
+    sessionDays: num("PORTAL_SESSION_DAYS", 7),
+    smtpHost: str("SMTP_HOST"),
+    smtpPort: num("SMTP_PORT", 587),
+    smtpUser: str("SMTP_USER"),
+    smtpPass: str("SMTP_PASS"),
+    smtpFrom: str("SMTP_FROM"),
+    smtpSecure: str("SMTP_SECURE") ? bool("SMTP_SECURE") : null, // empty = TLS on port 465, STARTTLS otherwise
     // only if SUB_REPO is private and UPDATE_GITHUB_TOKEN cannot read it
     subGithubToken: str("SUB_GITHUB_TOKEN"),
   };
@@ -120,6 +132,8 @@ export function readConfig({ reload = false } = {}) {
   if (!(cfg.offlineAfter >= 10)) problems.push(`OFFLINE_AFTER_SECONDS must be at least 10 (got ${cfg.offlineAfter})`);
   if (!(cfg.historyMinutes >= 1 && cfg.historyMinutes <= 1440)) problems.push("HISTORY_MINUTES must be between 1 and 1440");
   if (!(cfg.hysteresis >= 0)) problems.push("ALERT_HYSTERESIS must be 0 or more");
+  if (!(cfg.notifyHistoryDays >= 1 && cfg.notifyHistoryDays <= 3650)) problems.push("NOTIFY_HISTORY_DAYS must be between 1 and 3650");
+  if (!(cfg.sessionDays > 0 && cfg.sessionDays <= 365)) problems.push("PORTAL_SESSION_DAYS must be between 1 and 365");
   for (const k of ["cpuAlertFor", "ramAlertFor", "diskAlertFor", "tempAlertFor", "reportIntervalMinutes"]) {
     if (!(cfg[k] >= 0)) problems.push(`${k} must be 0 or more`);
   }

@@ -2,6 +2,7 @@
 import { Bot, InlineKeyboard, Keyboard } from "grammy";
 import { esc, fmtClock, fmtDateTime, fmtDuration, splitMessage, TELEGRAM_LIMIT } from "./format.js";
 import { RUN_TIMEOUT_MS } from "./monitor.js";
+import { tgName } from "./accounts.js";
 
 const HTML = { parse_mode: "HTML", link_preview_options: { is_disabled: true } };
 /** Labels of the button bar under the message box (a tap sends exactly this text). */
@@ -23,6 +24,7 @@ export const COMMANDS = [
   { command: "version", description: "Versions of main + sub servers" },
   { command: "update", description: "Update from GitHub: /update all | subs | main | <name>" },
   { command: "dashboard", description: "Open the live dashboard" },
+  { command: "portal", description: "One-time login link for the web portal" },
   { command: "mute", description: "Mute notifications: /mute 60" },
   { command: "unmute", description: "Turn notifications back on" },
   { command: "help", description: "Help" },
@@ -39,6 +41,7 @@ const HELP =
   "/status — CPU, RAM, disk, temperature of every server\n" +
   "/alerts — servers down + active alerts\n" +
   "/dashboard — live charts\n" +
+  "/portal — log in to the web portal (notification history, accounts)\n" +
   "/mute 60 · /unmute — silence notifications\n\n" +
   "<b>Updates</b> (from your GitHub repo)\n" +
   "/version — which version each server runs\n" +
@@ -49,7 +52,7 @@ const HELP =
   "To connect a server: /add it here, then put the two lines you get into the <code>.env</code> " +
   "of the sub-server project on that machine and start it.";
 
-export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = null) {
+export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = null, accounts = null) {
   const bot = new Bot(cfg.botToken, botOptions);
   const isPrivate = (ctx) => ctx.chat?.type === "private";
 
@@ -456,6 +459,19 @@ export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = 
     return ctx.reply("📈 Live dashboard:", { reply_markup: new InlineKeyboard().webApp("Open dashboard", cfg.webappUrl) });
   };
   bot.command("dashboard", showDashboard);
+
+  // ---- web portal: a one-time login link (owners = ADMIN_IDS; the bot already knows who you are)
+  bot.command("portal", (ctx) => {
+    if (!isPrivate(ctx)) return ctx.reply("For safety, login links are only sent in a private chat with the bot.");
+    if (!accounts) return ctx.reply("The web portal is not available on this server.");
+    const base = cfg.publicUrl || (cfg.webappUrl ? new URL(cfg.webappUrl).origin : "");
+    if (!base) return ctx.reply("Set <code>PUBLIC_URL</code> in .env first.", HTML);
+    const url = `${base}/portal/#login=${accounts.loginLink(ctx.from.id, tgName(ctx.from))}`;
+    return ctx.reply("🌐 <b>Web portal</b>\nThis button logs you in once, within 10 minutes. Don't forward it.", {
+      ...HTML,
+      reply_markup: new InlineKeyboard().url("Open the web portal", url),
+    });
+  });
 
   const muteFor = (ctx, minutes) => {
     if (!Number.isFinite(minutes) || minutes <= 0) return ctx.reply("Usage: /mute 60  (minutes)");

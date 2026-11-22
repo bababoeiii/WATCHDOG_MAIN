@@ -8,6 +8,9 @@ import { Notifier } from "./notifier.js";
 import { createBot, runBot } from "./bot.js";
 import { createServer } from "./server.js";
 import { esc, setTimezone } from "./format.js";
+import { EventLog } from "./events.js";
+import { Accounts } from "./accounts.js";
+import { createMailer } from "./mailer.js";
 
 const APP_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cfg = loadConfig();
@@ -20,7 +23,16 @@ const store = new Store(cfg.dataFile);
 // The monitor pushes to the dashboard through `broadcast`, which exists once the HTTP server does.
 let broadcast = () => {};
 const notifier = new Notifier(null, cfg, store);
-const monitor = new Monitor(cfg, store, (text, important) => notifier.send(text, important), (msg) => broadcast(msg));
+
+// Every notification goes into the event log (the web portal's history, also while muted),
+// then to Telegram — unless meta.telegram is false (the bot reports that one another way).
+const events = new EventLog(path.join(path.dirname(cfg.dataFile), "events.jsonl"), cfg.notifyHistoryDays);
+function notify(text, important = false, meta = {}) {
+  events.add({ kind: meta.kind || "main", text, server: meta.server || null, important, muted: notifier.isMuted() });
+  if (meta.telegram !== false) notifier.send(text, important);
+}
+const accounts = new Accounts(store, cfg, createMailer(cfg));
+const monitor = new Monitor(cfg, store, notify, (msg) => broadcast(msg));
 
 // ---------------------------------------------------------------- auto-update (optional)
 let updaterMod = null;
@@ -51,12 +63,12 @@ console.log(u?.enabled ? `Auto-update ${cfg.autoUpdate ? "on" : "off"}: ${u.remo
 let restarting = false;
 function restartForUpdate(r, quiet = false) {
   if (!updaterMod?.isSupervised()) {
-    notifier.send(`⬆️ Main server updated <code>${r.from}</code> → <code>${r.to}</code>. Restart it to run the new version.`);
+    notify(`⬆️ Main server updated <code>${r.from}</code> → <code>${r.to}</code>. Restart it to run the new version.`, false, { kind: "main" });
     return false;
   }
   if (restarting) return true;
   restarting = true;
-  if (!quiet) notifier.send(`⬆️ Main server updated <code>${r.from}</code> → <code>${r.to}</code>, restarting…`);
+  if (!quiet) notify(`⬆️ Main server updated <code>${r.from}</code> → <code>${r.to}</code>, restarting…`, false, { kind: "main" });
   setTimeout(() => shutdown("update"), 500);
   return true;
 }
@@ -78,10 +90,11 @@ async function updateMain(source, { deferRestart = false } = {}) {
 }
 
 // ---------------------------------------------------------------- bot + http
-const realBot = createBot(cfg, monitor, notifier, {}, updateMain);
+const realBot = createBot(cfg, monitor, notifier, {}, updateMain, accounts);
 notifier.api = realBot.api;
 
-const http = createServer(cfg, monitor, notifier, updateMain);
+const botUsername = () => realBot.botInfo?.username || null; // throws until the bot connected: the portal catches it
+const http = createServer(cfg, monitor, notifier, updateMain, { events, accounts, notify, botUsername });
 broadcast = http.broadcast;
 
 http.server.on("error", (e) => {
@@ -100,6 +113,7 @@ http.server.listen(cfg.port, cfg.host, () => {
 });
 
 monitor.start();
+events.start();
 monitor.refreshSubHeads(0);
 setInterval(() => monitor.refreshSubHeads(0), cfg.updateCheckMinutes * 60_000).unref();
 
@@ -135,7 +149,7 @@ u?.start(
     console.error(`[update] ${e.message}`);
     if (store.getKv("lastUpdateError") !== e.message) {
       store.setKv("lastUpdateError", e.message);
-      notifier.send(`❗ Main server auto-update failed\n${esc(e.message)}`, true);
+      notify(`❗ Main server auto-update failed\n${esc(e.message)}`, true, { kind: "main" });
     }
   },
 );
@@ -147,9 +161,9 @@ runBot(realBot, cfg, () => {
   const now = u?.info().commit;
   const before = store.getKv("mainCommit");
   if (now && before && now !== before) {
-    notifier.send(`⬆️ Main server is now running <code>${now}</code> (was <code>${before}</code>).`);
+    notify(`⬆️ Main server is now running <code>${now}</code> (was <code>${before}</code>).`, false, { kind: "main" });
   } else {
-    notifier.send(`🐕 Watchdog main server started${now ? ` (<code>${now}</code>)` : ""} — ${monitor.list().length} server(s) registered.`);
+    notify(`🐕 Watchdog main server started${now ? ` (<code>${now}</code>)` : ""} — ${monitor.list().length} server(s) registered.`, false, { kind: "main" });
   }
   if (now) store.setKv("mainCommit", now);
   store.setKv("lastUpdateError", null);
@@ -162,6 +176,7 @@ async function shutdown(reason) {
   shuttingDown = true;
   console.log(`Shutting down (${reason})`);
   monitor.stop();
+  events.stop();
   u?.stop();
   store.flush();
   setTimeout(() => process.exit(0), 8000).unref(); // never hang

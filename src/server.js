@@ -5,10 +5,12 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { validateInitData } from "./telegramAuth.js";
+import { createPortal } from "./portal.js";
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
 
-export function createServer(cfg, monitor, notifier, updateMain) {
+/** @param portalDeps { events, accounts, notify, botUsername } — the web portal (/portal/); omit to leave it out */
+export function createServer(cfg, monitor, notifier, updateMain, portalDeps = null) {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", "loopback"); // aaPanel/nginx on the same machine
@@ -50,8 +52,8 @@ export function createServer(cfg, monitor, notifier, updateMain) {
   // ---------------------------------------------------------------- sub server API
   app.post("/api/agent/report", agentAuth, (req, res) => {
     if (!req.body || typeof req.body !== "object") return res.status(422).json({ error: "JSON body required" });
-    const { update } = monitor.handleReport(req.server, req.body);
-    res.json({ ok: true, id: req.server.id, name: req.server.name, update });
+    const { update, reboot } = monitor.handleReport(req.server, req.body);
+    res.json({ ok: true, id: req.server.id, name: req.server.name, update, ...(reboot ? { reboot: true } : {}) });
   });
 
   app.post("/api/agent/goodbye", agentAuth, (req, res) => {
@@ -108,6 +110,9 @@ export function createServer(cfg, monitor, notifier, updateMain) {
     res.json({ ok: true });
   });
 
+  // ---------------------------------------------------------------- web portal (/portal/)
+  const portal = portalDeps ? createPortal({ app, cfg, monitor, notifier, publicDir: PUBLIC_DIR, ...portalDeps }) : null;
+
   // ---------------------------------------------------------------- misc + static
   app.get("/healthz", (req, res) => res.json({ ok: true, servers: monitor.list().length }));
   app.get("/", (req, res) => res.redirect("/app/"));
@@ -138,6 +143,7 @@ export function createServer(cfg, monitor, notifier, updateMain) {
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url, "http://localhost");
+    if (url.pathname === "/ws/portal" && portal) return portal.handleUpgrade(req, socket, head); // nginx proxies /ws*
     if (url.pathname !== "/ws") return socket.destroy();
     const fromUrl = url.searchParams.get("initData");
     if (fromUrl) {
@@ -194,6 +200,7 @@ export function createServer(cfg, monitor, notifier, updateMain) {
   heartbeat.unref();
 
   const broadcast = (message) => {
+    portal?.onServerChange(message);
     const data = JSON.stringify(message);
     for (const ws of clients) if (ws.readyState === 1 && ws.bufferedAmount < 1 << 20) ws.send(data); // skip stalled clients
   };
@@ -202,6 +209,7 @@ export function createServer(cfg, monitor, notifier, updateMain) {
   const close = () =>
     new Promise((resolve) => {
       clearInterval(heartbeat);
+      portal?.close();
       for (const ws of wss.clients) ws.terminate();
       wss.close();
       server.close(() => resolve());

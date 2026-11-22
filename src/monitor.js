@@ -50,7 +50,8 @@ export class Monitor {
   /**
    * @param cfg       config from loadConfig()
    * @param store     Store instance
-   * @param notify    (text, important?) => void
+   * @param notify    (text, important?, meta?) => void — meta: { server, kind, telegram } for the event log
+   *                  (telegram: false = only log it, the bot already reports it another way)
    * @param broadcast (message) => void   — pushes to dashboard WebSocket clients
    */
   constructor(cfg, store, notify, broadcast) {
@@ -385,15 +386,16 @@ export class Monitor {
     while (rt.history.length && (rt.history[0][0] < cutoff || rt.history.length > HISTORY_CAP)) rt.history.shift();
 
     if (prevStatus === "pending") {
-      this.notify(`🆕 ${nameHtml(s)} connected for the first time\n${metricsLine(payload)}`, true);
+      this.notify(`🆕 ${nameHtml(s)} connected for the first time\n${metricsLine(payload)}`, true, { server: s, kind: "connected" });
     } else if (prevStatus !== "online") {
       this.notify(
         `🟢 ${nameHtml(s)} is <b>back online</b>${rebooted ? " (rebooted)" : ""}\n` +
           `Was down for ${fmtDuration(prevSince ? now - prevSince : null)}\n${metricsLine(payload)}`,
         true,
+        { server: s, kind: "online" },
       );
     } else if (rebooted) {
-      this.notify(`🔄 ${nameHtml(s)} <b>rebooted</b> (up ${fmtDuration(payload.uptime)})\n${metricsLine(payload)}`, true);
+      this.notify(`🔄 ${nameHtml(s)} <b>rebooted</b> (up ${fmtDuration(payload.uptime)})\n${metricsLine(payload)}`, true, { server: s, kind: "reboot" });
     }
     if (prevStatus !== "online") {
       s.status = "online";
@@ -401,6 +403,9 @@ export class Monitor {
       s.offlineReason = null;
     }
 
+    s.allowReboot = raw?.allow_reboot === true; // ALLOW_REMOTE_REBOOT on the sub server
+    const reboot = Boolean(s.pendingReboot && s.pendingReboot.expires > now);
+    if (s.pendingReboot) s.pendingReboot = null; // delivered now, or too late to deliver
     const version = sanitizeVersion(raw?.version);
     const run = this.runOf(s.id);
     const inRun = run?.items.get(s.id);
@@ -412,21 +417,34 @@ export class Monitor {
 
     const alertsChanged = this.evaluateAlerts(s, now);
     // status/version/flag changes are saved right away; plain metrics at most once a minute
-    const important = prevStatus !== "online" || rebooted || versionChanged || update || alertsChanged;
+    const important = prevStatus !== "online" || rebooted || versionChanged || update || reboot || alertsChanged;
     this.store.save(important ? 1000 : ROUTINE_SAVE_MS);
     this.broadcast({ type: "update", server: this.summary(s), point: rt.history[rt.history.length - 1] });
-    return { update };
+    return { update, reboot };
+  }
+
+  /** Ask an online sub server to reboot (portal). Dropped if it isn't picked up within waitSeconds. */
+  requestReboot(id, by, waitSeconds = 120) {
+    const s = this.get(id);
+    if (!s) return false;
+    s.pendingReboot = { by: String(by), at: nowSec(), expires: nowSec() + waitSeconds };
+    this.notify(`🔁 ${nameHtml(s)}: reboot requested by <b>${esc(by)}</b>`, true, { server: s, kind: "reboot_request" });
+    this.store.save();
+    this.broadcast({ type: "update", server: this.summary(s) });
+    return true;
   }
 
   /** @returns {boolean} whether anything worth saving changed */
   trackVersion(s, v, quiet = false) {
     if (!v) return false;
     const prev = s.version || {};
-    if (!quiet && prev.commit && v.commit && prev.commit !== v.commit) {
-      this.notify(`⬆️ ${nameHtml(s)} updated <code>${esc(prev.commit)}</code> → <code>${esc(v.commit)}</code>`);
+    // quiet (the bot reports this server's update itself): still logged for the portal, no Telegram message
+    const telegram = !quiet;
+    if (prev.commit && v.commit && prev.commit !== v.commit) {
+      this.notify(`⬆️ ${nameHtml(s)} updated <code>${esc(prev.commit)}</code> → <code>${esc(v.commit)}</code>`, false, { server: s, kind: "update", telegram });
     }
-    if (!quiet && v.error && v.error !== prev.error) {
-      this.notify(`❗ ${nameHtml(s)}: update failed\n${esc(v.error)}`, true);
+    if (v.error && v.error !== prev.error) {
+      this.notify(`❗ ${nameHtml(s)}: update failed\n${esc(v.error)}`, true, { server: s, kind: "update_failed", telegram });
     }
     const next = {
       commit: v.commit, branch: v.branch, enabled: v.enabled, auto: v.auto,
@@ -449,6 +467,7 @@ export class Monitor {
         ? `⏻ ${nameHtml(s)} is <b>shutting down / rebooting</b>`
         : `⏹ The agent on ${nameHtml(s)} was <b>stopped</b> — no more data from this server`,
       true,
+      { server: s, kind: "offline" },
     );
     this.store.save();
     this.broadcast({ type: "update", server: this.summary(s) });
@@ -476,6 +495,7 @@ export class Monitor {
         `🔴 ${nameHtml(s)} is <b>DOWN</b>\nNo response for ${fmtDuration(now - (s.lastSeen || now))} ` +
           `(last seen ${fmtClock(s.lastSeen)})`,
         true,
+        { server: s, kind: "down" },
       );
       this.store.save();
       this.broadcast({ type: "update", server: this.summary(s) });
@@ -504,6 +524,7 @@ export class Monitor {
             `⚠️ ${nameHtml(s)}: <b>${rule.label}</b>${where}\n` +
               `${Math.round(value)}${rule.unit}${held} (limit ${rule.threshold}${rule.unit})`,
             true,
+            { server: s, kind: "alert" },
           );
         }
       } else if (value < rule.threshold - this.cfg.hysteresis) {
@@ -515,6 +536,8 @@ export class Monitor {
           changed = true;
           this.notify(
             `✅ ${nameHtml(s)}: ${rule.label.toLowerCase()} resolved${where}\nNow ${Math.round(value)}${rule.unit} (lasted ${lasted})`,
+            false,
+            { server: s, kind: "resolved" },
           );
         }
       } else if (!st.active) {
@@ -544,7 +567,7 @@ export class Monitor {
       if (!last) return this.store.setKv("lastReportTs", now);
       if (now - last < interval) return;
       this.store.setKv("lastReportTs", now);
-      if (this.list().length) this.notify(this.statusText("🩺 <b>Health report</b>"));
+      if (this.list().length) this.notify(this.statusText("🩺 <b>Health report</b>"), false, { kind: "report" });
     }, 30_000);
   }
 

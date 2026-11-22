@@ -165,6 +165,33 @@ Safety rules:
   tells you.
 - Set `AUTO_UPDATE=false` to update only when you say so (`/update`).
 
+## Web portal (`/portal/`)
+
+`https://YOUR-DOMAIN/portal/` in any browser: the notification history (also what came in while muted),
+live, with a "now" overview of what is down; who may see what depends on the account.
+
+| | sees | add servers, reboot | accounts, activity log |
+|---|---|---|---|
+| **Owner** | every server + main-server events | ✔ | ✔ |
+| **Staff** | the servers assigned to them | ✔ (a server they add is assigned to them; reboot only their servers) | ✖ |
+| **User** | the servers assigned to them | ✖ | ✖ |
+
+- **First login (owners):** send `/portal` to the bot: it answers with a one-time link (10 minutes).
+  `ADMIN_IDS` are always owners. Optional: send `/setdomain` to @BotFather with your domain, and the
+  login page also gets a "Log in with Telegram" button.
+- **Accounts:** an owner creates them under *Accounts* (username, role, servers) and sends the invite
+  link (48 h, once). The person sets a password (10+ characters) and a second step: an
+  **authenticator app** (QR code) or **e-mail codes** (needs `SMTP_*` in `.env`). Accounts with a
+  Telegram ID can also use the Telegram button. *Reset login* gives a new invite link; *Disable* and
+  *Delete* end their sessions at once.
+- **Reboot** from *Servers* works only for sub servers with `ALLOW_REMOTE_REBOOT=true` in their `.env`
+  (off by default), and only while they are online — a machine that is off can't be started from here.
+- Every reboot, added server and account change is in *Activity* (owners) and the reboot request also
+  goes to Telegram.
+- Security: passwords are stored as scrypt hashes, invite links/codes/sessions only as SHA-256 hashes;
+  10 failed logins per username or IP lock that for 15 minutes; the session cookie is `HttpOnly`,
+  `SameSite=Lax` and `Secure` over HTTPS; changes must be JSON from the same site.
+
 ## Control command (on the main server)
 
 The installer adds `watchdog-main` (a link to `control.sh`):
@@ -194,6 +221,7 @@ install or update; `/start` brings it back): **📊 Status · ⚠️ Alerts · �
 | `/version` | versions vs. each project's GitHub repo |
 | `/update all \| subs \| main \| <name>` | update now (`all` = both sides, `subs` = all sub servers; one summary) |
 | `/dashboard` | open the live dashboard |
+| `/portal` | one-time login link for the web portal (owners) |
 | `/mute 60` · `/unmute` | silence notifications |
 
 Only users in `ADMIN_IDS` can use the bot and dashboard. Tokens are only sent in private chats.
@@ -214,6 +242,8 @@ Only users in `ADMIN_IDS` can use the bot and dashboard. Tokens are only sent in
 | `TEMP_ALERT_CELSIUS` / `_FOR_SECONDS` | 80 / 60 | hottest sensor |
 | `ALERT_HYSTERESIS` | 5 | how far below the limit before "resolved" |
 | `AUTO_UPDATE` · `UPDATE_CHECK_MINUTES` · `UPDATE_BRANCH` · `UPDATE_GITHUB_TOKEN` | true · 30 · checked-out branch · — | |
+| `NOTIFY_HISTORY_DAYS` · `PORTAL_SESSION_DAYS` | 30 · 7 | web portal: notification history kept, how long a login lasts |
+| `SMTP_HOST` · `SMTP_PORT` · `SMTP_USER` · `SMTP_PASS` · `SMTP_FROM` · `SMTP_SECURE` | — · 587 · — · — · `SMTP_USER` · auto | e-mail login codes for the portal; empty `SMTP_HOST` = authenticator app only |
 | `TIMEZONE` | server's own | time zone for times in Telegram messages, e.g. `America/Toronto` |
 | `PORT` | 8080 | local port of the Node app; aaPanel/nginx proxies to it (`npm run setup` picks a free one) |
 | `HOST` | 127.0.0.1 | `127.0.0.1` = only via aaPanel/nginx; `0.0.0.0` = reachable directly |
@@ -238,9 +268,10 @@ npm test     # login check, report sanitising, tokens, alerts, down detection,
 ## Layout
 
 ```
-src/        index, server, monitor, bot, notifier, telegramAuth, store, format, config, updater
+src/        index, server, monitor, bot, notifier, telegramAuth, store, format, config, updater,
+            portal (web portal API), accounts (logins, 2FA), events (notification log), mailer
+public/     index.html (Telegram dashboard), portal.html (web portal)
 scripts/    setup.js (npm run setup) · nginx.js (npm run nginx [--apply|--remove] → aaPanel site config)
-public/     index.html (Telegram Mini App)
 control.sh  watchdog-main start|restart|reload|test|health · scripts/check.js (the self-check)
 install.sh  aaPanel install · Dockerfile · docker-compose.yml · watchdog-main.service · .env.example
 ```

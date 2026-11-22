@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🐕%3C/text%3E%3C/svg%3E">
+<title>Watchdog</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f0efec; --card: #fcfcfb; --text: #0b0b0b; --muted: #6b6a66; --link: #2a78d6;
+  --accent: #2a78d6; --accent-text: #fff; --line: rgba(127,127,127,.18); --soft: rgba(127,127,127,.10);
+  --good: #0ca30c; --warning: #c98a00; --critical: #d03b3b; --info: #2a78d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root { color-scheme: dark; --page: #111110; --card: #1a1a19; --text: #f0efec; --muted: #9a998f;
+    --line: rgba(255,255,255,.10); --soft: rgba(255,255,255,.06); --link: #5c9ded; --accent: #3987e5; --warning: #e0a526; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--page); color: var(--text);
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+body { padding: 14px 14px calc(28px + env(safe-area-inset-bottom)); max-width: 880px; margin: 0 auto; }
+button, input, select { font: inherit; color: inherit; }
+a { color: var(--link); }
+.muted { color: var(--muted); } .small { font-size: 12.5px; } .num { font-variant-numeric: tabular-nums; }
+.hidden { display: none !important; }
+
+.top { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 2px 12px; flex-wrap: wrap; }
+.top h1 { font-size: 20px; margin: 0; letter-spacing: -.01em; }
+.who { display: flex; align-items: center; gap: 10px; font-size: 13.5px; }
+.conn { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.conn i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; }
+.conn.live i { background: var(--good); } .conn.down i { background: var(--critical); }
+.tabs { display: flex; gap: 4px; margin-bottom: 12px; overflow-x: auto; }
+.tabs button { border: 0; background: transparent; padding: 7px 12px; border-radius: 9px; cursor: pointer; color: var(--muted); white-space: nowrap; }
+.tabs button.on { background: var(--card); color: var(--text); font-weight: 600; }
+
+.card { background: var(--card); border-radius: 14px; padding: 14px 16px; margin-bottom: 10px; }
+.card h2 { font-size: 15px; margin: 0 0 10px; }
+.card h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.grow { flex: 1; min-width: 0; }
+
+input[type=text], input[type=password], input[type=email], input[type=number], select {
+  background: var(--page); border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; min-width: 0; }
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+label.field { display: block; margin: 10px 0; }
+label.field > span { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 4px; }
+label.field input, label.field select { width: 100%; }
+.btn { border: 0; border-radius: 9px; padding: 9px 14px; cursor: pointer; background: var(--soft); }
+.btn.primary { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+.btn.danger { color: var(--critical); }
+.btn.small { padding: 5px 10px; font-size: 13px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.err { color: var(--critical); font-size: 13.5px; margin: 8px 0 0; min-height: 1em; }
+.ok { color: var(--good); font-size: 13.5px; }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+pre { background: var(--page); border-radius: 9px; padding: 10px; white-space: pre-wrap; word-break: break-all; margin: 6px 0; }
+.copy { position: relative; }
+.copy button { position: absolute; top: 6px; right: 6px; }
+
+.login { max-width: 380px; margin: 8vh auto 0; }
+.login .card { padding: 20px; }
+.divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12.5px; margin: 16px 0; }
+.divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.qr { background: #fff; border-radius: 10px; padding: 8px; width: 200px; margin: 8px 0; }
+.qr svg { display: block; width: 100%; height: auto; }
+.choice { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+.choice button { text-align: left; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--page); cursor: pointer; }
+.choice button.on { border-color: var(--accent); outline: 1px solid var(--accent); }
+.choice button:disabled { opacity: .5; cursor: not-allowed; }
+
+/* overview */
+.problems { display: grid; gap: 6px; }
+.problem { display: flex; gap: 8px; align-items: baseline; }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; transform: translateY(-1px); }
+.dot.online { background: var(--good); } .dot.offline { background: var(--critical); } .dot.pending { background: var(--muted); }
+.badge { display: inline-block; font-size: 11.5px; padding: 1px 7px; border-radius: 99px; background: var(--soft); color: var(--muted); }
+.badge.crit { color: var(--critical); } .badge.warn { color: var(--warning); } .badge.good { color: var(--good); }
+
+/* events */
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.events { list-style: none; margin: 0; padding: 0; }
+.ev { display: grid; grid-template-columns: 26px 1fr; gap: 4px 8px; padding: 10px 0; border-top: 1px solid var(--line); }
+.ev:first-child { border-top: 0; }
+.ev .icon { font-size: 16px; line-height: 1.3; text-align: center; }
+.ev .meta { font-size: 12.5px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; }
+.ev .text { white-space: pre-wrap; word-break: break-word; }
+.ev.new { animation: flash 1.6s ease; }
+@keyframes flash { from { background: rgba(42,120,214,.14); } to { background: transparent; } }
+
+/* tables */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 6px 8px; }
+td { padding: 9px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+.checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 12px; margin: 4px 0; }
+.checks label { display: flex; gap: 6px; align-items: center; font-size: 14px; }
+.edit { background: var(--page); border-radius: 10px; padding: 10px 12px; margin: 4px 0 8px; }
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--card);
+  padding: 9px 14px; border-radius: 10px; font-size: 14px; z-index: 9; max-width: 90vw; }
+@media (max-width: 560px) { .hide-sm { display: none; } .choice { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="toast" class="toast hidden"></div>
+<script>
+"use strict";
+// ---------------------------------------------------------------- helpers
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtTime = (ts) => {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000), now = new Date();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === now.toDateString()) return time;
+  return d.toLocaleDateString([], { month: "short", day: "numeric", ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}) }) + " " + time;
+};
+const fmtAgo = (ts) => {
+  if (!ts) return "never";
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+};
+let toastTimer;
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add("hidden"), 3200);
+}
+async function api(path, { method = "GET", body } = {}) {
+  const res = await fetch("/portal/api" + path, {
+    method, credentials: "same-origin",
+    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  let data = {};
+  try { data = await res.json(); } catch { /* empty */ }
+  if (!res.ok) {
+    if (res.status === 401 && S.me && !path.startsWith("/login")) { S.me = null; stopLive(); render(); }
+    throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status });
+  }
+  return data;
+}
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); toast("Copied"); } catch { toast("Select the text and copy it by hand"); }
+}
+const copyBox = (text) => `<div class="copy"><pre>${esc(text)}</pre><button class="btn small" data-copy="${esc(text)}">Copy</button></div>`;
+document.addEventListener("click", (e) => { const b = e.target.closest("[data-copy]"); if (b) copy(b.dataset.copy); });
+
+const ICON = { down: "🔴", offline: "⏹", online: "🟢", connected: "🆕", reboot: "🔄", reboot_request: "🔁", alert: "⚠️",
+  resolved: "✅", update: "⬆️", update_failed: "❗", main: "🐕", report: "🩺", audit: "👤" };
+
+// ---------------------------------------------------------------- state
+const S = {
+  config: null, me: null, view: "events",
+  servers: new Map(), kinds: {}, mutedUntil: null, retention: 30,
+  events: [], filter: { server: "", kind: "" }, more: true, loading: false,
+  accounts: null, accountServers: [], telegramOwners: [], editing: null, created: null,
+  added: null, conn: "",
+  login: { step: "password", ticket: null, method: null, email: null, error: "" },
+  invite: null, // { token, info, method, totp, emailSent, error }
+};
+
+// ---------------------------------------------------------------- live updates
+let ws = null, wsRetry = 0, wsTimer = null;
+function startLive() {
+  stopLive();
+  const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/portal`;
+  ws = new WebSocket(url);
+  ws.onopen = () => { wsRetry = 0; setConn("live"); };
+  ws.onmessage = (m) => {
+    let msg; try { msg = JSON.parse(m.data); } catch { return; }
+    if (msg.type === "event") onLiveEvent(msg.event);
+    else if (msg.type === "server") { S.servers.set(msg.server.id, msg.server); renderLater(); }
+    else if (msg.type === "removed") { S.servers.delete(msg.id); renderLater(); }
+    else if (msg.type === "reload") loadOverview().then(() => reloadEvents());
+  };
+  ws.onclose = (e) => {
+    ws = null;
+    if (!S.me) return;
+    if (e.code === 4401) { S.me = null; render(); return; }
+    setConn("down");
+    wsTimer = setTimeout(startLive, Math.min(30000, 1000 * 2 ** wsRetry++));
+  };
+}
+function stopLive() { clearTimeout(wsTimer); if (ws) { ws.onclose = null; ws.close(); ws = null; } }
+function setConn(c) { S.conn = c; const el = $("#conn"); if (el) { el.className = "conn " + c; el.lastChild.textContent = c === "live" ? "live" : "reconnecting…"; } }
+setInterval(() => ws && ws.readyState === 1 && ws.send("ping"), 25000);
+
+function matchesFilter(e) {
+  if (S.filter.server && e.server !== S.filter.server) return false;
+  if (S.filter.kind && e.kind !== S.filter.kind) return false;
+  return S.view === "activity" ? e.kind === "audit" : e.kind !== "audit"; // activity has its own tab
+}
+function onLiveEvent(e) {
+  if (S.events.some((x) => x.id === e.id)) return;
+  if ((S.view === "events" || S.view === "activity") && matchesFilter(e)) {
+    e._new = true;
+    S.events.unshift(e);
+    renderLater();
+  }
+}
+
+// ---------------------------------------------------------------- data
+async function loadOverview() {
+  const o = await api("/overview");
+  S.me = o.me;
+  S.servers = new Map(o.servers.map((s) => [s.id, s]));
+  S.kinds = o.kinds; S.mutedUntil = o.muted_until; S.retention = o.retention_days;
+}
+async function reloadEvents() {
+  S.events = []; S.more = true;
+  await loadMore();
+}
+async function loadMore() {
+  if (S.loading || !S.more) return;
+  S.loading = true; render();
+  try {
+    const q = new URLSearchParams({ limit: "100" });
+    const kind = S.view === "activity" ? "audit" : S.filter.kind;
+    if (kind) q.set("kind", kind);
+    else q.set("exclude", "audit");
+    if (S.filter.server) q.set("server", S.filter.server);
+    const last = S.events[S.events.length - 1];
+    if (last) q.set("before", String(last.id));
+    const { events } = await api("/events?" + q);
+    S.events.push(...events.filter((e) => !S.events.some((x) => x.id === e.id)));
+    S.more = events.length === 100;
+  } catch (e) { toast(e.message); }
+  S.loading = false; render();
+}
+async function loadAccounts() {
+  const r = await api("/accounts");
+  S.accounts = r.accounts; S.accountServers = r.servers; S.telegramOwners = r.telegram_owners;
+}
+
+// ---------------------------------------------------------------- views: login
+function renderLogin() {
+  const L = S.login, c = S.config || {};
+  let body;
+  if (L.step === "password") {
+    body = `<form id="f-login">
+      <label class="field"><span>Username</span><input type="text" name="username" autocomplete="username" autocapitalize="none" value="${esc(L.username || "")}" required ${L.username ? "" : "autofocus"}></label>
+      <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required ${L.username ? "autofocus" : ""}></label>
+      <button class="btn primary" style="width:100%">Continue</button>
+      <p class="err">${esc(L.error)}</p></form>`;
+  } else {
+    body = `<form id="f-code">
+      <p class="small muted">${L.method === "totp" ? "Enter the 6-digit code from your authenticator app." : `We sent a 6-digit code to <b>${esc(L.email)}</b>.`}</p>
+      <label class="field"><span>Code</span><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="8" required autofocus></label>
+      <button class="btn primary" style="width:100%">Log in</button>
+      <p class="err">${esc(L.error)}</p>
+      <p class="small"><a href="#" id="restart">← Start again</a></p></form>`;
+  }
+  return `<div class="login"><div class="top"><h1>🐕 Watchdog</h1></div><div class="card">
+    <h2>Log in</h2>${body}
+    ${L.step === "password" && c.bot_username ? `<div class="divider">or</div><div id="tg-login" style="text-align:center"></div>` : ""}
+    ${L.step === "password" ? `<p class="small muted" style="margin:14px 0 0">Owner? Send <code>/portal</code> to the bot for a one-time login link.</p>` : ""}
+  </div></div>`;
+}
+function bindLogin() {
+  const f = $("#f-login");
+  if (f) f.onsubmit = async (e) => {
+    e.preventDefault();
+    const d = new FormData(f);
+    S.login.error = "";
+    S.login.username = d.get("username"); // kept when the password was wrong
+    try {
+      const r = await api("/login", { method: "POST", body: { username: d.get("username"), password: d.get("password") } });
+      Object.assign(S.login, { step: "code", ticket: r.ticket, method: r.method, email: r.email });
+    } catch (err) { S.login.error = err.message; }
+    render();
+  };
+  const fc = $("#f-code");
+  if (fc) fc.onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api("/login/verify", { method: "POST", body: { ticket: S.login.ticket, code: new FormData(fc).get("code") } });
+      S.login = { step: "password", error: "", username: S.login.username };
+      await enter();
+    } catch (err) {
+      S.login.error = err.message;
+      if (/Start again|took too long/.test(err.message)) S.login.step = "password";
+      render();
+    }
+  };
+  const r = $("#restart");
+  if (r) r.onclick = (e) => { e.preventDefault(); S.login = { step: "password", error: "", username: S.login.username }; render(); };
+  const tg = $("#tg-login");
+  if (tg && S.config?.bot_username) {
+    const sc = document.createElement("script");
+    sc.async = true;
+    sc.src = "https://telegram.org/js/telegram-widget.js?22";
+    sc.dataset.telegramLogin = S.config.bot_username;
+    sc.dataset.size = "large";
+    sc.dataset.radius = "9";
+    sc.dataset.onauth = "onTelegramAuth(user)";
+    tg.appendChild(sc);
+  }
+}
+window.onTelegramAuth = async (user) => {
+  try {
+    await api("/login/telegram", { method: "POST", body: user });
+    await enter();
+  } catch (e) { S.login.error = e.message; render(); }
+};
+
+// ---------------------------------------------------------------- views: invite (set password + second step)
+function renderInvite() {
+  const I = S.invite;
+  if (I.error && !I.info) return `<div class="login"><div class="top"><h1>🐕 Watchdog</h1></div><div class="card"><h2>Invite</h2><p class="err">${esc(I.error)}</p><p><a href="/portal/">Go to login</a></p></div></div>`;
+  if (!I.info) return `<div class="login"><div class="card muted">Loading…</div></div>`;
+  const c = I.info;
+  const m = I.method;
+  let second = "";
+  if (m === "totp" && I.totp) {
+    second = `<p class="small">1. Scan this with Google Authenticator, 1Password, Authy …</p>
+      <div class="qr">${I.totp.qr}</div>
+      <p class="small muted">Can't scan? Enter this key: <code>${esc(I.totp.secret.replace(/(.{4})/g, "$1 ").trim())}</code></p>
+      <label class="field"><span>2. Enter the 6-digit code it shows</span><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required></label>`;
+  } else if (m === "email") {
+    second = `<label class="field"><span>E-mail address</span>
+        <div class="row"><input class="grow" type="email" name="email" value="${esc(I.email || c.email || "")}" autocomplete="email"><button type="button" class="btn" id="send-code">${I.emailSent ? "Send again" : "Send code"}</button></div></label>
+      ${I.emailSent ? `<label class="field"><span>Code from the e-mail</span><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required></label>` : ""}`;
+  }
+  return `<div class="login"><div class="top"><h1>🐕 Watchdog</h1></div><div class="card">
+    <h2>Set up your login</h2>
+    <p class="small muted">Account <b>${esc(c.username)}</b> · ${esc(c.role)}</p>
+    <form id="f-invite">
+      <label class="field"><span>New password (at least ${c.min_password} characters)</span><input type="password" name="password" autocomplete="new-password" minlength="${c.min_password}" value="${esc(I.password || "")}" required></label>
+      <label class="field"><span>Repeat the password</span><input type="password" name="password2" autocomplete="new-password" value="${esc(I.password2 || "")}" required></label>
+      <h3>Second step at every login</h3>
+      <div class="choice">
+        <button type="button" data-method="totp" class="${m === "totp" ? "on" : ""}"><b>Authenticator app</b><br><span class="small muted">6-digit codes on your phone</span></button>
+        <button type="button" data-method="email" class="${m === "email" ? "on" : ""}" ${c.email_codes ? "" : "disabled"}><b>E-mail code</b><br><span class="small muted">${c.email_codes ? "a code by e-mail each time" : "not set up on this server"}</span></button>
+      </div>
+      ${second}
+      <button class="btn primary" style="width:100%; margin-top:6px" ${m && (m === "totp" || I.emailSent) ? "" : "disabled"}>Finish and log in</button>
+      <p class="err">${esc(I.error)}</p>
+    </form></div></div>`;
+}
+function bindInvite() {
+  const f = $("#f-invite");
+  if (!f) return;
+  const keep = () => { S.invite.password = f.password.value; S.invite.password2 = f.password2.value; if (f.email) S.invite.email = f.email.value; };
+  f.querySelectorAll("[data-method]").forEach((b) => (b.onclick = async () => {
+    keep();
+    S.invite.method = b.dataset.method; S.invite.error = "";
+    if (S.invite.method === "totp" && !S.invite.totp) {
+      try { S.invite.totp = await api(`/invite/${S.invite.token}/totp`, { method: "POST", body: {} }); } catch (e) { S.invite.error = e.message; }
+    }
+    render();
+  }));
+  const send = $("#send-code");
+  if (send) send.onclick = async () => {
+    keep();
+    try { await api(`/invite/${S.invite.token}/email`, { method: "POST", body: { email: f.email.value } }); S.invite.emailSent = true; S.invite.error = ""; toast("Code sent"); }
+    catch (e) { S.invite.error = e.message; }
+    render();
+  };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    keep();
+    if (f.password.value !== f.password2.value) { S.invite.error = "The two passwords are not the same"; return render(); }
+    try {
+      await api(`/invite/${S.invite.token}/finish`, { method: "POST", body: { password: f.password.value, method: S.invite.method, code: f.code?.value || "" } });
+      S.invite = null;
+      history.replaceState(null, "", "/portal/");
+      await enter();
+    } catch (err) { S.invite.error = err.message; render(); }
+  };
+}
+
+// ---------------------------------------------------------------- views: the app
+function renderApp() {
+  const me = S.me;
+  const tabs = [["events", "Notifications"], ["servers", "Servers"]];
+  if (me.is_owner) tabs.push(["accounts", "Accounts"], ["activity", "Activity"]);
+  let main = "";
+  if (S.view === "events" || S.view === "activity") main = renderEvents();
+  else if (S.view === "servers") main = renderServers();
+  else if (S.view === "accounts") main = renderAccounts();
+  return `<div class="top"><h1>🐕 Watchdog</h1>
+      <div class="who"><span id="conn" class="conn ${S.conn}"><i></i>${S.conn === "live" ? "live" : S.conn === "down" ? "reconnecting…" : "connecting…"}</span>
+      <span><b>${esc(me.name)}</b> <span class="badge">${esc(me.role_label)}</span></span><button class="btn small" id="logout">Log out</button></div></div>
+    <div class="tabs">${tabs.map(([k, l]) => `<button data-view="${k}" class="${S.view === k ? "on" : ""}">${l}</button>`).join("")}</div>
+    ${main}`;
+}
+
+const serverList = () => [...S.servers.values()].sort((a, b) => a.name.localeCompare(b.name));
+function renderOverview() {
+  const list = serverList();
+  const offline = list.filter((s) => s.status === "offline");
+  const alerts = list.flatMap((s) => (s.status === "online" ? s.alerts.map((a) => [s, a]) : []));
+  const online = list.filter((s) => s.status === "online").length;
+  const reason = { timeout: "no reports", shutdown: "shut down", agent_stopped: "agent stopped" };
+  let html = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Now</h2>
+    <span class="small muted">${online}/${list.length} online${S.mutedUntil ? ` · 🔕 Telegram muted until ${fmtTime(S.mutedUntil)}` : ""}</span></div>`;
+  if (!list.length) html += `<p class="muted small">No servers ${S.me.is_owner ? "yet" : "assigned to you yet — ask an owner"}.</p>`;
+  else if (!offline.length && !alerts.length) html += `<p class="ok" style="margin:10px 0 0">✅ All clear — nothing down, no active alerts.</p>`;
+  else {
+    html += `<div class="problems" style="margin-top:10px">`;
+    for (const s of offline) html += `<div class="problem"><span class="dot offline"></span><div><b>${esc(s.name)}</b> offline since ${fmtTime(s.status_since)} <span class="muted small">(${esc(reason[s.offline_reason] || "offline")}, ${fmtAgo(s.status_since)})</span></div></div>`;
+    for (const [s, a] of alerts) html += `<div class="problem"><span>⚠️</span><div><b>${esc(s.name)}</b>: ${esc(a.label)}${a.detail ? ` on ${esc(a.detail)}` : ""} — ${Math.round(a.value)}${esc(a.unit)} <span class="muted small">for ${fmtAgo(a.since).replace(" ago", "")}</span></div></div>`;
+    html += `</div>`;
+  }
+  return html + `</div>`;
+}
+
+function renderEvents() {
+  const activity = S.view === "activity";
+  const kinds = Object.entries(S.kinds).filter(([k]) => k !== "audit");
+  let html = activity ? `<div class="card small muted">Who did what in this portal (logins set up, servers added, reboots, account changes). Owners only.</div>` : renderOverview();
+  html += `<div class="card">${activity ? "" : `<div class="filters">
+      <select id="f-server"><option value="">All servers</option>${serverList().map((s) => `<option value="${esc(s.id)}" ${S.filter.server === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
+      <select id="f-kind"><option value="">All types</option>${kinds.map(([k, l]) => `<option value="${k}" ${S.filter.kind === k ? "selected" : ""}>${ICON[k] || ""} ${esc(l)}</option>`).join("")}</select>
+    </div>`}
+    <ul class="events">`;
+  for (const e of S.events) {
+    html += `<li class="ev${e._new ? " new" : ""}"><div class="icon">${ICON[e.kind] || "•"}</div><div>
+      <div class="meta"><span class="num" title="${esc(new Date(e.ts * 1000).toLocaleString())}">${fmtTime(e.ts)}</span>
+        ${e.name ? `<b>${esc(e.name)}</b>` : `<span>Main server</span>`}
+        <span>${esc(S.kinds[e.kind] || e.kind)}</span>
+        ${e.actor ? `<span>by ${esc(e.actor)}</span>` : ""}
+        ${e.muted ? `<span class="badge" title="Notifications were muted: this wasn't sent to Telegram">🔕 muted</span>` : ""}
+        ${e.important && !activity ? `<span class="badge crit">important</span>` : ""}</div>
+      <div class="text">${esc(e.text.replace(/^\p{Extended_Pictographic}\uFE0F?\s*/u, ""))}</div></div></li>`;
+    delete e._new;
+  }
+  html += `</ul>`;
+  if (!S.events.length && !S.loading) html += `<p class="muted small">Nothing here${S.filter.server || S.filter.kind ? " with these filters" : " yet"}. History is kept for ${S.retention} days.</p>`;
+  if (S.more && S.events.length) html += `<div style="text-align:center;margin-top:8px"><button class="btn" id="more" ${S.loading ? "disabled" : ""}>${S.loading ? "Loading…" : "Load older"}</button></div>`;
+  else if (S.events.length) html += `<p class="muted small" style="text-align:center">That's everything from the last ${S.retention} days.</p>`;
+  return html + `</div>`;
+}
+
+function renderServers() {
+  const me = S.me;
+  const list = serverList();
+  let html = "";
+  if (me.can_operate) {
+    html += `<div class="card"><h2>Add a server</h2>
+      <form id="f-add" class="row"><input class="grow" type="text" name="name" placeholder="Name, e.g. web-1" maxlength="40" required><button class="btn primary">Add</button></form>
+      ${S.added ? `<div style="margin-top:12px"><p class="ok">✅ <b>${esc(S.added.server.name)}</b> added${me.is_owner ? "" : " and assigned to you"}. The token is shown only now.</p>
+        ${S.added.install ? `<h3>Install on the server (Linux, as root)</h3>${copyBox(S.added.install)}` : ""}
+        <h3>Or put this in its .env</h3>${copyBox(S.added.env)}
+        <p class="small muted">To allow remote reboots from here, also add <code>ALLOW_REMOTE_REBOOT=true</code> to its .env.</p>
+        <button class="btn small" id="added-done">Done</button></div>` : ""}</div>`;
+  }
+  html += `<div class="card"><h2>${me.is_owner ? "All servers" : "Your servers"}</h2>`;
+  if (!list.length) html += `<p class="muted small">No servers ${me.is_owner ? "yet" : "assigned to you yet — ask an owner"}.</p>`;
+  else {
+    html += `<table><tr><th>Server</th><th class="hide-sm">Since</th><th class="hide-sm">Version</th>${me.can_operate ? "<th></th>" : ""}</tr>`;
+    for (const s of list) {
+      const state = s.status === "pending" ? "never connected" : s.status;
+      let reboot = "";
+      if (me.can_operate) {
+        const why = s.reboot_pending ? "Reboot requested…" : s.status !== "online" ? "Offline: it can't receive a reboot" : !s.allow_reboot ? "Not allowed: set ALLOW_REMOTE_REBOOT=true in its .env" : "";
+        reboot = `<td style="text-align:right"><button class="btn small" data-reboot="${esc(s.id)}" ${why ? `disabled title="${esc(why)}"` : ""}>${s.reboot_pending ? "⏳ Rebooting…" : "🔁 Reboot"}</button>
+          ${why && !s.reboot_pending ? `<div class="small muted" style="margin-top:3px">${esc(why)}</div>` : ""}</td>`;
+      }
+      html += `<tr><td><span class="dot ${s.status}"></span> <b>${esc(s.name)}</b> <span class="muted small">${esc(state)}</span>
+          ${s.alerts.length ? `<span class="badge warn">⚠️ ${s.alerts.length}</span>` : ""}<div class="small muted">last report ${fmtAgo(s.last_seen)}</div></td>
+        <td class="hide-sm small">${fmtTime(s.status_since)}</td><td class="hide-sm"><code>${esc(s.version || "—")}</code></td>${reboot}</tr>`;
+    }
+    html += `</table>`;
+  }
+  return html + `</div>`;
+}
+
+const ROLE = { owner: "Owner", staff: "Staff", user: "User" };
+const ROLE_HELP = { owner: "every server, accounts, activity", staff: "assigned servers; add + reboot", user: "assigned servers, read only" };
+function serverChecks(name, selected) {
+  if (!S.accountServers.length) return `<p class="small muted">No servers yet.</p>`;
+  return `<div class="checks">${S.accountServers.map((s) => `<label><input type="checkbox" name="${name}" value="${esc(s.id)}" ${selected.includes(s.id) ? "checked" : ""}> ${esc(s.name)}</label>`).join("")}</div>`;
+}
+function renderAccounts() {
+  if (!S.accounts) return `<div class="card muted">Loading…</div>`;
+  const nameOf = new Map(S.accountServers.map((s) => [s.id, s.name]));
+  let html = `<div class="card"><h2>New account</h2>
+    <form id="f-new">
+      <div class="row"><label class="field grow"><span>Username</span><input type="text" name="username" autocapitalize="none" maxlength="32" required></label>
+      <label class="field"><span>Role</span><select name="role">${["user", "staff", "owner"].map((r) => `<option value="${r}">${ROLE[r]} — ${ROLE_HELP[r]}</option>`).join("")}</select></label></div>
+      <span class="small muted">Servers it can see (owners see all)</span>${serverChecks("servers", [])}
+      <div class="row"><label class="field grow"><span>E-mail (optional, for e-mail codes)</span><input type="email" name="email"></label>
+      <label class="field grow"><span>Telegram ID (optional, allows "Log in with Telegram")</span><input type="text" name="telegram_id" inputmode="numeric"></label></div>
+      <button class="btn primary">Create and get invite link</button></form>
+    ${S.created ? `<div style="margin-top:12px"><p class="ok">✅ Send this link to <b>${esc(S.created.username)}</b>. It works once, for 48 hours; they set their password and second step there.</p>${copyBox(S.created.url)}<button class="btn small" id="created-done">Done</button></div>` : ""}
+  </div>`;
+  html += `<div class="card"><h2>Accounts</h2>
+    <p class="small muted">Telegram owners (ADMIN_IDS in .env, always owners): ${S.telegramOwners.map((id) => `<code>${id}</code>`).join(", ") || "none"}</p>`;
+  if (!S.accounts.length) html += `<p class="muted small">No accounts yet.</p>`;
+  else {
+    html += `<table><tr><th>Account</th><th class="hide-sm">Servers</th><th class="hide-sm">Login</th><th></th></tr>`;
+    for (const a of S.accounts) {
+      const servers = a.role === "owner" ? "all" : a.servers.map((id) => nameOf.get(id)).filter(Boolean).join(", ") || "none";
+      const login = a.invited ? `<span class="badge warn">invite open</span>` : a.disabled ? `<span class="badge crit">disabled</span>` : `${a.twofa === "totp" ? "app" : "e-mail"}${a.telegram_id ? " · Telegram" : ""}<div class="small muted">last ${fmtAgo(a.last_login)}</div>`;
+      html += `<tr><td><b>${esc(a.username)}</b> <span class="badge">${ROLE[a.role]}</span>${a.id === S.me.self_id ? ` <span class="small muted">(you)</span>` : ""}</td>
+        <td class="hide-sm small">${esc(servers)}</td><td class="hide-sm small">${login}</td>
+        <td style="text-align:right"><button class="btn small" data-edit="${esc(a.id)}">${S.editing === a.id ? "Close" : "Edit"}</button></td></tr>`;
+      if (S.editing === a.id) html += `<tr><td colspan="4">${renderEdit(a)}</td></tr>`;
+    }
+    html += `</table>`;
+  }
+  return html + `</div>`;
+}
+function renderEdit(a) {
+  const self = a.id === S.me.self_id;
+  return `<form class="edit" id="f-edit" data-id="${esc(a.id)}">
+    <div class="row"><label class="field"><span>Role</span><select name="role" ${self ? "disabled" : ""}>${["user", "staff", "owner"].map((r) => `<option value="${r}" ${a.role === r ? "selected" : ""}>${ROLE[r]}</option>`).join("")}</select></label>
+      <label class="field grow"><span>E-mail</span><input type="email" name="email" value="${esc(a.email || "")}"></label>
+      <label class="field grow"><span>Telegram ID</span><input type="text" name="telegram_id" inputmode="numeric" value="${esc(a.telegram_id ?? "")}"></label></div>
+    <span class="small muted">Servers</span>${serverChecks("servers", a.servers)}
+    <div class="row" style="margin-top:8px"><button class="btn primary">Save</button>
+      ${self ? `<span class="small muted">You can't change your own role, disable, reset or delete yourself.</span>` : `
+      <button type="button" class="btn" data-act="toggle">${a.disabled ? "Enable" : "Disable"}</button>
+      <button type="button" class="btn" data-act="reset" title="New invite link: new password and second step">Reset login</button>
+      <button type="button" class="btn danger" data-act="delete">Delete</button>`}</div>
+  </form>`;
+}
+
+// ---------------------------------------------------------------- render + events
+let renderPending = false;
+function renderLater() { if (!renderPending) { renderPending = true; requestAnimationFrame(() => { renderPending = false; render(); }); } }
+function render() {
+  const root = $("#root");
+  // keep what the user is typing in forms that a live update re-renders
+  const active = document.activeElement;
+  const keep = active && active.form && active.form.id && active.name ? { form: active.form.id, name: active.name, value: active.value, start: active.selectionStart } : null;
+  const formVals = {};
+  for (const f of root.querySelectorAll("form[id]")) formVals[f.id] = [...f.elements].filter((el) => el.name && el.type !== "checkbox").map((el) => [el.name, el.value]);
+  const checks = {};
+  for (const f of root.querySelectorAll("form[id]")) checks[f.id] = [...f.querySelectorAll("input[type=checkbox]")].map((el) => [el.name, el.value, el.checked]);
+
+  if (S.invite) root.innerHTML = renderInvite();
+  else if (!S.me) root.innerHTML = renderLogin();
+  else root.innerHTML = renderApp();
+
+  for (const [id, vals] of Object.entries(formVals)) {
+    const f = document.getElementById(id);
+    if (!f || id === "f-login" || id === "f-code" || id === "f-invite") continue;
+    for (const [n, v] of vals) if (f.elements[n] && f.elements[n].value !== undefined && f.elements[n].type !== "submit") f.elements[n].value = v;
+    for (const [n, v, c] of checks[id] || []) { const el = f.querySelector(`input[type=checkbox][name="${n}"][value="${CSS.escape(v)}"]`); if (el) el.checked = c; }
+  }
+  if (keep) {
+    const f = document.getElementById(keep.form);
+    const el = f && f.elements[keep.name];
+    if (el && el.focus) { el.focus(); try { el.setSelectionRange(keep.start, keep.start); } catch { /* not a text input */ } }
+  }
+  if (S.invite) bindInvite();
+  else if (!S.me) bindLogin();
+  else bindApp();
+}
+
+function bindApp() {
+  $("#logout").onclick = async () => { await api("/logout", { method: "POST", body: {} }).catch(() => {}); S.me = null; stopLive(); render(); };
+  document.querySelectorAll("[data-view]").forEach((b) => (b.onclick = async () => {
+    S.view = b.dataset.view;
+    if (S.view === "events" || S.view === "activity") { if (S.view === "activity") S.filter = { server: "", kind: "" }; reloadEvents(); }
+    if (S.view === "accounts") { render(); try { await loadAccounts(); } catch (e) { toast(e.message); } }
+    render();
+  }));
+  const fs = $("#f-server"), fk = $("#f-kind");
+  if (fs) fs.onchange = () => { S.filter.server = fs.value; reloadEvents(); };
+  if (fk) fk.onchange = () => { S.filter.kind = fk.value; reloadEvents(); };
+  const more = $("#more");
+  if (more) more.onclick = loadMore;
+
+  const add = $("#f-add");
+  if (add) add.onsubmit = async (e) => {
+    e.preventDefault();
+    try { S.added = await api("/servers", { method: "POST", body: { name: add.name.value } }); S.servers.set(S.added.server.id, S.added.server); add.reset(); }
+    catch (err) { toast(err.message); }
+    render();
+  };
+  const ad = $("#added-done");
+  if (ad) ad.onclick = () => { S.added = null; render(); };
+  document.querySelectorAll("[data-reboot]").forEach((b) => (b.onclick = async () => {
+    const s = S.servers.get(b.dataset.reboot);
+    if (!s || !confirm(`Reboot ${s.name} now?\n\nThe machine restarts; it is offline for a minute or two.`)) return;
+    try { const r = await api(`/servers/${encodeURIComponent(s.id)}/reboot`, { method: "POST", body: {} }); S.servers.set(s.id, r.server); toast(`Reboot sent to ${s.name}`); }
+    catch (err) { toast(err.message); }
+    render();
+  }));
+
+  const nf = $("#f-new");
+  if (nf) nf.onsubmit = async (e) => {
+    e.preventDefault();
+    const servers = [...nf.querySelectorAll("input[name=servers]:checked")].map((x) => x.value);
+    try {
+      const r = await api("/accounts", { method: "POST", body: { username: nf.username.value, role: nf.role.value, servers, email: nf.email.value, telegram_id: nf.telegram_id.value } });
+      S.created = { username: r.account.username, url: r.invite_url };
+      nf.reset();
+      await loadAccounts();
+    } catch (err) { toast(err.message); }
+    render();
+  };
+  const cd = $("#created-done");
+  if (cd) cd.onclick = () => { S.created = null; render(); };
+  document.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => { S.editing = S.editing === b.dataset.edit ? null : b.dataset.edit; render(); }));
+  const ef = $("#f-edit");
+  if (ef) {
+    const id = ef.dataset.id;
+    const a = S.accounts.find((x) => x.id === id);
+    ef.onsubmit = async (e) => {
+      e.preventDefault();
+      const body = { servers: [...ef.querySelectorAll("input[name=servers]:checked")].map((x) => x.value), email: ef.email.value, telegram_id: ef.telegram_id.value };
+      if (!ef.role.disabled) body.role = ef.role.value;
+      try { await api(`/accounts/${id}`, { method: "PATCH", body }); await loadAccounts(); S.editing = null; toast("Saved"); }
+      catch (err) { toast(err.message); }
+      render();
+    };
+    ef.querySelectorAll("[data-act]").forEach((b) => (b.onclick = async () => {
+      try {
+        if (b.dataset.act === "toggle") await api(`/accounts/${id}`, { method: "PATCH", body: { disabled: !a.disabled } });
+        if (b.dataset.act === "reset") {
+          if (!confirm(`Reset the login of ${a.username}?\n\nTheir password and second step stop working; they get a new invite link.`)) return;
+          const r = await api(`/accounts/${id}/reset`, { method: "POST", body: {} });
+          S.created = { username: a.username, url: r.invite_url };
+        }
+        if (b.dataset.act === "delete") {
+          if (!confirm(`Delete the account ${a.username}?`)) return;
+          await api(`/accounts/${id}`, { method: "DELETE", body: {} });
+          S.editing = null;
+        }
+        await loadAccounts();
+      } catch (err) { toast(err.message); }
+      render();
+    }));
+  }
+}
+
+// ---------------------------------------------------------------- start
+async function enter() {
+  await loadOverview();
+  S.view = "events";
+  startLive();
+  await reloadEvents();
+}
+async function boot() {
+  try { S.config = await api("/config"); } catch { S.config = {}; }
+  const link = /^#login=([A-Za-z0-9_-]+)$/.exec(location.hash);
+  if (link) {
+    history.replaceState(null, "", "/portal/"); // the link works once: don't keep it in the address bar
+    try { await api("/login/link", { method: "POST", body: { token: link[1] } }); }
+    catch (e) { S.login.error = e.message; }
+  }
+  const m = /^#invite=([A-Za-z0-9_-]+)$/.exec(location.hash);
+  if (m) {
+    S.invite = { token: m[1], info: null, method: null, error: "" };
+    render();
+    try { S.invite.info = await api(`/invite/${m[1]}`); } catch (e) { S.invite.error = e.message; }
+    return render();
+  }
+  try { await enter(); } catch { S.me = null; render(); }
+}
+setInterval(() => S.me && (S.view === "events" || S.view === "servers") && renderLater(), 60000); // refresh "x min ago"
+boot();
+</script>
+</body>
+</html>
