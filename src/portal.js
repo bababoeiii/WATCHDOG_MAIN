@@ -1,4 +1,4 @@
-// Web portal (/portal/): log in with a password + second step or with Telegram, then see the
+// Website (the login page is the home page, /): log in with a password + second step or with Telegram, then see the
 // notifications of the servers you may see, live. Staff and owners add servers and reboot them;
 // owners manage accounts. Roles:
 //   owner — every server, main-server events, activity log, accounts
@@ -53,6 +53,7 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
       id: s.id, name: s.name, status: s.status, status_since: s.statusSince, last_seen: s.lastSeen,
       offline_reason: s.offlineReason, alerts: sum.alerts, version: s.version?.commit || null,
       allow_reboot: Boolean(s.allowReboot), reboot_pending: Boolean(s.pendingReboot && s.pendingReboot.expires > now),
+      metrics: s.payload || null, // the latest report: CPU, RAM, disks, temperatures, network, processes …
     };
   };
   const meView = (who) => ({
@@ -61,7 +62,7 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     self_id: who.accountId || null,
   });
   const origin = (req) => cfg.publicUrl || `${req.protocol}://${req.get("host")}`;
-  const inviteUrl = (req, token) => `${origin(req)}/portal/#invite=${token}`;
+  const inviteUrl = (req, token) => `${origin(req)}/#invite=${token}`;
 
   // ---------------------------------------------------------------- request helpers
   const ipOf = (req) => req.ip || req.socket.remoteAddress || "";
@@ -84,16 +85,11 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
   };
   const fail = (status, message) => Object.assign(new Error(message), { status });
 
-  // security headers for everything under /portal
-  app.use("/portal", (req, res, next) => {
-    res.set({
-      "X-Frame-Options": "DENY",
-      "X-Content-Type-Options": "nosniff",
-      "Referrer-Policy": "no-referrer",
-      "Cache-Control": "no-store",
-    });
-    // Changes must be JSON from this site: forms on other sites can't send that (CSRF).
-    if (req.method !== "GET" && req.path.startsWith("/api/")) {
+  // API: no caching, no framing; changes must be JSON from this site (forms on other sites can't
+  // send that, so no CSRF)
+  app.use("/api/web", (req, res, next) => {
+    res.set({ "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store" });
+    if (req.method !== "GET") {
       if (!req.is("application/json")) return res.status(415).json({ error: "JSON only" });
       if (!sameOrigin(req.get("origin"), req.get("host"))) return res.status(403).json({ error: "wrong origin" });
     }
@@ -109,21 +105,20 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
   const ownerOnly = (req, res, next) => (req.who.role === "owner" ? next() : res.status(403).json({ error: "Owners only" }));
   const operatorsOnly = (req, res, next) => (mayOperate(req.who) ? next() : res.status(403).json({ error: "Not allowed for your role" }));
 
-  // ---------------------------------------------------------------- the page
-  // express matches "/portal" and "/portal/" alike: redirect only the one without the slash
-  app.get("/portal", (req, res) => {
-    if (!req.originalUrl.split("?")[0].endsWith("/")) return res.redirect("/portal/");
-    res.set(
-      "Content-Security-Policy",
-      "default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; " +
+  // ---------------------------------------------------------------- the page (home page)
+  app.get("/", (req, res) => {
+    res.set({
+      "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
+      "Content-Security-Policy":
+        "default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; " +
         "img-src 'self' data: https://*.telegram.org https://t.me; frame-src https://oauth.telegram.org; connect-src 'self' wss: ws:; " +
         "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
-    );
+    });
     res.sendFile(path.join(publicDir, "portal.html"));
   });
 
   // ---------------------------------------------------------------- login
-  app.get("/portal/api/config", (req, res) => {
+  app.get("/api/web/config", (req, res) => {
     let bot = null;
     try {
       bot = botUsername();
@@ -133,21 +128,21 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     res.json({ bot_username: bot, email_codes: accounts.emailAvailable(), min_password: MIN_PASSWORD });
   });
 
-  app.get("/portal/api/me", auth, (req, res) => res.json({ me: meView(req.who) }));
+  app.get("/api/web/me", auth, (req, res) => res.json({ me: meView(req.who) }));
 
-  app.post("/portal/api/login", router(async (req, res) => {
+  app.post("/api/web/login", router(async (req, res) => {
     const { username, password } = req.body || {};
     if (!username || !password) throw fail(400, "Enter your username and password");
     res.json(await accounts.login(String(username), String(password), ipOf(req)));
   }));
 
-  app.post("/portal/api/login/verify", router(async (req, res) => {
+  app.post("/api/web/login/verify", router(async (req, res) => {
     const a = accounts.verify(String(req.body?.ticket || ""), String(req.body?.code || ""), ipOf(req));
     setSession(req, res, { type: "account", id: a.id });
     res.json({ ok: true });
   }));
 
-  app.post("/portal/api/login/telegram", router(async (req, res) => {
+  app.post("/api/web/login/telegram", router(async (req, res) => {
     const tg = verifyTelegramLogin(req.body, cfg.botToken);
     if (!tg) throw fail(401, "Telegram login could not be verified. Try again.");
     const who = accounts.telegramIdentity(tg);
@@ -156,16 +151,16 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     res.json({ ok: true });
   }));
 
-  // one-time link from the bot's /portal command (the token is in the URL #fragment, so link
+  // one-time link from the bot's /login command (the token is in the URL #fragment, so link
   // previews and server logs never see it; the page posts it here)
-  app.post("/portal/api/login/link", router(async (req, res) => {
+  app.post("/api/web/login/link", router(async (req, res) => {
     const who = accounts.useLoginLink(String(req.body?.token || ""));
-    if (!who) throw fail(401, "This login link has expired or was already used. Send /portal to the bot for a new one.");
+    if (!who) throw fail(401, "This login link has expired or was already used. Send /login to the bot for a new one.");
     setSession(req, res, who);
     res.json({ ok: true });
   }));
 
-  app.post("/portal/api/logout", (req, res) => {
+  app.post("/api/web/logout", (req, res) => {
     const token = parseCookies(req.get("cookie"))[COOKIE];
     if (token) accounts.endSession(token);
     res.clearCookie(COOKIE, { path: "/" });
@@ -178,22 +173,22 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     if (!a) throw fail(404, "This invite link is invalid or has expired. Ask an owner for a new one.");
     return a;
   };
-  app.get("/portal/api/invite/:token", router(async (req, res) => {
+  app.get("/api/web/invite/:token", router(async (req, res) => {
     const a = inviteAccount(req);
     res.json({ username: a.username, role: ROLE_LABEL[a.role], email: a.email, email_codes: accounts.emailAvailable(), min_password: MIN_PASSWORD });
   }));
-  app.post("/portal/api/invite/:token/totp", router(async (req, res) => {
+  app.post("/api/web/invite/:token/totp", router(async (req, res) => {
     inviteAccount(req);
     const { secret, url } = accounts.inviteTotp(req.params.token);
     const qr = await QRCode.toString(url, { type: "svg", margin: 1, errorCorrectionLevel: "M" });
     res.json({ secret, url, qr });
   }));
-  app.post("/portal/api/invite/:token/email", router(async (req, res) => {
+  app.post("/api/web/invite/:token/email", router(async (req, res) => {
     inviteAccount(req);
     await accounts.inviteEmail(req.params.token, String(req.body?.email || ""));
     res.json({ ok: true });
   }));
-  app.post("/portal/api/invite/:token/finish", router(async (req, res) => {
+  app.post("/api/web/invite/:token/finish", router(async (req, res) => {
     const { password, method, code } = req.body || {};
     const a = accounts.finishInvite(req.params.token, { password, method, code });
     audit({ name: a.username }, `${a.username} set up their login (${a.twofa === "totp" ? "authenticator app" : "e-mail codes"})`);
@@ -204,7 +199,7 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
   // ---------------------------------------------------------------- notifications
   const visibleServers = (who) => monitor.list().filter((s) => canSeeServer(who, s.id));
 
-  app.get("/portal/api/overview", auth, (req, res) => {
+  app.get("/api/web/overview", auth, (req, res) => {
     const kinds = Object.fromEntries(Object.entries(KINDS).filter(([k]) => k !== "audit" || req.who.role === "owner"));
     res.json({
       now: Date.now() / 1000,
@@ -213,10 +208,19 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
       muted_until: notifier.isMuted() ? notifier.mutedUntil() : null,
       kinds,
       retention_days: events.retentionDays,
+      thresholds: Object.fromEntries(monitor.rules.map((r) => [r.key, r.threshold])),
+      history_minutes: cfg.historyMinutes,
     });
   });
 
-  app.get("/portal/api/events", auth, (req, res) => {
+  // the last HISTORY_MINUTES of one server, for the charts
+  app.get("/api/web/servers/:id/history", auth, (req, res) => {
+    const s = monitor.get(req.params.id);
+    if (!s || !canSeeServer(req.who, s.id)) return res.status(404).json({ error: "Unknown server" });
+    res.json({ now: Date.now() / 1000, history: monitor.history(s.id) });
+  });
+
+  app.get("/api/web/events", auth, (req, res) => {
     const { before, limit, server, kind, exclude } = req.query;
     const skip = exclude ? String(exclude) : "";
     const list = events.query({
@@ -230,14 +234,14 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
   });
 
   // ---------------------------------------------------------------- servers: add, reboot (staff + owners)
-  app.post("/portal/api/servers", auth, operatorsOnly, router(async (req, res) => {
+  app.post("/api/web/servers", auth, operatorsOnly, router(async (req, res) => {
     const { server, token } = monitor.addServer(req.body?.name);
     if (req.who.accountId && req.who.role !== "owner") accounts.assign(req.who.accountId, server.id); // staff see what they add
     audit(req.who, `${req.who.name} added server ${server.name}`, server);
     res.json({ server: serverView(server), token, env: monitor.envSnippet(token), install: monitor.installCommand(token) });
   }));
 
-  app.post("/portal/api/servers/:id/reboot", auth, operatorsOnly, router(async (req, res) => {
+  app.post("/api/web/servers/:id/reboot", auth, operatorsOnly, router(async (req, res) => {
     const s = monitor.get(req.params.id);
     if (!s || !canSeeServer(req.who, s.id)) throw fail(404, "Unknown server");
     if (s.status !== "online") throw fail(409, `${s.name} is offline: it can't receive the reboot (a machine that is off can't be started from here).`);
@@ -253,11 +257,11 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     if (req.who.accountId === req.params.id) throw fail(400, `You can't ${what} your own account`);
   };
 
-  app.get("/portal/api/accounts", auth, ownerOnly, (req, res) => {
+  app.get("/api/web/accounts", auth, ownerOnly, (req, res) => {
     res.json({ accounts: accounts.all().map((a) => accounts.view(a)), servers: serverNames(), telegram_owners: cfg.adminIds });
   });
 
-  app.post("/portal/api/accounts", auth, ownerOnly, router(async (req, res) => {
+  app.post("/api/web/accounts", auth, ownerOnly, router(async (req, res) => {
     const { username, role, servers, email, telegram_id } = req.body || {};
     const known = new Set(monitor.list().map((s) => s.id));
     const { account, inviteToken } = accounts.create(
@@ -268,7 +272,7 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     res.json({ account: accounts.view(account), invite_url: inviteUrl(req, inviteToken) });
   }));
 
-  app.patch("/portal/api/accounts/:id", auth, ownerOnly, router(async (req, res) => {
+  app.patch("/api/web/accounts/:id", auth, ownerOnly, router(async (req, res) => {
     const b = req.body || {};
     if (b.role !== undefined || b.disabled !== undefined) notSelf(req, b.disabled ? "disable" : "change the role of");
     const known = new Set(monitor.list().map((s) => s.id));
@@ -281,7 +285,7 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     res.json({ account: accounts.view(a) });
   }));
 
-  app.post("/portal/api/accounts/:id/reset", auth, ownerOnly, router(async (req, res) => {
+  app.post("/api/web/accounts/:id/reset", auth, ownerOnly, router(async (req, res) => {
     notSelf(req, "reset");
     const a = accounts.get(req.params.id);
     if (!a) throw fail(404, "Unknown account");
@@ -290,7 +294,7 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     res.json({ account: accounts.view(a), invite_url: inviteUrl(req, token) });
   }));
 
-  app.delete("/portal/api/accounts/:id", auth, ownerOnly, router(async (req, res) => {
+  app.delete("/api/web/accounts/:id", auth, ownerOnly, router(async (req, res) => {
     notSelf(req, "delete");
     const a = accounts.get(req.params.id);
     if (!a || !accounts.remove(a.id)) throw fail(404, "Unknown account");
@@ -298,12 +302,12 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     res.json({ ok: true });
   }));
 
-  // ---------------------------------------------------------------- live updates (WebSocket /ws/portal)
+  // ---------------------------------------------------------------- live updates (WebSocket /ws/web)
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 });
   const clients = new Set();
   const send = (ws, msg) => ws.readyState === 1 && ws.bufferedAmount < 1 << 20 && ws.send(JSON.stringify(msg));
 
-  /** Called from the HTTP server's "upgrade" for /ws/portal. The session cookie is the login. */
+  /** Called from the HTTP server's "upgrade" for /ws/web. The session cookie is the login. */
   const handleUpgrade = (req, socket, head) => {
     const token = parseCookies(req.headers.cookie)[COOKIE];
     const who = accounts.identify(token);
@@ -339,7 +343,9 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     const s = monitor.get(msg.server.id);
     if (!s) return;
     let view = null;
-    for (const ws of clients) if (canSeeServer(ws.who, s.id)) send(ws, { type: "server", server: (view ||= serverView(s)) });
+    for (const ws of clients) {
+      if (canSeeServer(ws.who, s.id)) send(ws, { type: "server", server: (view ||= serverView(s)), ...(msg.point ? { point: msg.point } : {}) });
+    }
   };
 
   // every 30 s: drop dead sockets, and re-check each login (account disabled, servers re-assigned …)

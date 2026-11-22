@@ -9,7 +9,7 @@ import { createPortal } from "./portal.js";
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
 
-/** @param portalDeps { events, accounts, notify, botUsername } — the web portal (/portal/); omit to leave it out */
+/** @param portalDeps { events, accounts, notify, botUsername } — the website (login page at /); omit to leave it out */
 export function createServer(cfg, monitor, notifier, updateMain, portalDeps = null) {
   const app = express();
   app.disable("x-powered-by");
@@ -110,12 +110,11 @@ export function createServer(cfg, monitor, notifier, updateMain, portalDeps = nu
     res.json({ ok: true });
   });
 
-  // ---------------------------------------------------------------- web portal (/portal/)
+  // ---------------------------------------------------------------- website (login page at /)
   const portal = portalDeps ? createPortal({ app, cfg, monitor, notifier, publicDir: PUBLIC_DIR, ...portalDeps }) : null;
 
   // ---------------------------------------------------------------- misc + static
-  app.get("/healthz", (req, res) => res.json({ ok: true, servers: monitor.list().length }));
-  app.get("/", (req, res) => res.redirect("/app/"));
+  app.get("/healthz", (req, res) => res.json({ ok: true, servers: monitor.list().length, db: monitor.store.dbOk !== false }));
   app.use("/app", express.static(PUBLIC_DIR, { index: "index.html", maxAge: 0 }));
 
   // malformed JSON or other request errors: a short JSON answer instead of an HTML error page
@@ -143,7 +142,7 @@ export function createServer(cfg, monitor, notifier, updateMain, portalDeps = nu
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url, "http://localhost");
-    if (url.pathname === "/ws/portal" && portal) return portal.handleUpgrade(req, socket, head); // nginx proxies /ws*
+    if (url.pathname === "/ws/web" && portal) return portal.handleUpgrade(req, socket, head); // nginx proxies /ws*
     if (url.pathname !== "/ws") return socket.destroy();
     const fromUrl = url.searchParams.get("initData");
     if (fromUrl) {

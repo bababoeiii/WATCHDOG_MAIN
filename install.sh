@@ -14,7 +14,8 @@
 #   --repo URL            GitHub repository (default: the repo this script is in)
 #   --branch NAME         branch to follow (default: current branch, or main)
 #   --dir PATH            install location (default /opt/watchdog-main)
-#   --domain D --port P --bot-token T --admin-ids IDS   answer setup questions up front
+#   --domain D --port P --bot-token T --admin-ids IDS --database-url URL   answer setup questions up front
+#                         (URL: postgres://USER:PASSWORD@127.0.0.1:5432/DATABASE — create it in aaPanel → Databases → PgSQL)
 #   --reconfigure         ask the setup questions again (port, domain, bot) even if .env exists
 #   --vhost FILE          nginx site config to edit (default: found from the domain; aaPanel or /etc/nginx)
 #   --no-nginx            don't touch nginx (print the block instead)
@@ -34,8 +35,8 @@ while [[ $# -gt 0 ]]; do
     --vhost) VHOST="$2"; shift 2;;
     --no-nginx) NO_NGINX=true; shift;;
     --user) RUN_USER="$2"; shift 2;;
-    --domain|--port|--bot-token|--admin-ids|--timezone) SETUP_ARGS+=("$1" "$2"); shift 2;;
-    -h|--help) sed -n '2,25p' "$0" 2>/dev/null || true; exit 0;;
+    --domain|--port|--bot-token|--admin-ids|--timezone|--database-url) SETUP_ARGS+=("$1" "$2"); shift 2;;
+    -h|--help) sed -n '2,23p' "$0" 2>/dev/null || true; exit 0;;
     *) echo "Unknown option: $1"; exit 1;;
   esac
 done
@@ -165,6 +166,7 @@ env_get() { sed -n "s/^$1=//p" .env | tail -1 | tr -d '\r'; }
 PORT="$(env_get PORT)"; PORT="${PORT:-8080}"
 HOST="$(env_get HOST)"; HOST="${HOST:-127.0.0.1}"
 PUBLIC_URL="$(env_get PUBLIC_URL)"
+[[ -n "$(env_get DATABASE_URL)" ]] || die "DATABASE_URL is missing in $APP/.env. Create a PostgreSQL database (aaPanel → Databases → PgSQL), then run: sudo bash $APP/install.sh --database-url postgres://USER:PASSWORD@127.0.0.1:5432/DATABASE"
 DOMAIN="$(echo "$PUBLIC_URL" | sed -E 's#^https?://##; s#[:/].*$##')"
 
 # ---------------------------------------------------------------- user + service

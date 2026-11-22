@@ -12,10 +12,13 @@
   --page: #f0efec; --card: #fcfcfb; --text: #0b0b0b; --muted: #6b6a66; --link: #2a78d6;
   --accent: #2a78d6; --accent-text: #fff; --line: rgba(127,127,127,.18); --soft: rgba(127,127,127,.10);
   --good: #0ca30c; --warning: #c98a00; --critical: #d03b3b; --info: #2a78d6;
+  --track: rgba(127,127,127,.16); --danger-text: #d03b3b;
+  --series-1: #2a78d6; --series-2: #eb6834; --threshold: rgba(208,59,59,.55);
 }
 @media (prefers-color-scheme: dark) {
   :root { color-scheme: dark; --page: #111110; --card: #1a1a19; --text: #f0efec; --muted: #9a998f;
-    --line: rgba(255,255,255,.10); --soft: rgba(255,255,255,.06); --link: #5c9ded; --accent: #3987e5; --warning: #e0a526; }
+    --line: rgba(255,255,255,.10); --soft: rgba(255,255,255,.06); --link: #5c9ded; --accent: #3987e5; --warning: #e0a526;
+    --track: rgba(255,255,255,.10); --series-1: #3987e5; --series-2: #d95926; --threshold: rgba(230,103,103,.6); }
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--page); color: var(--text);
@@ -99,12 +102,54 @@ td { padding: 9px 8px; border-top: 1px solid var(--line); vertical-align: top; }
 .edit { background: var(--page); border-radius: 10px; padding: 10px 12px; margin: 4px 0 8px; }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--card);
   padding: 9px 14px; border-radius: 10px; font-size: 14px; z-index: 9; max-width: 90vw; }
+/* servers (same look as the Telegram dashboard) */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }
+.grid .card { margin: 0; }
+.server { cursor: pointer; transition: transform .08s ease; }
+.server:hover { outline: 1px solid var(--line); }
+.server:active { transform: scale(.995); }
+.sname { font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--track); white-space: nowrap; }
+.pill i { width: 7px; height: 7px; border-radius: 50%; }
+.pill.on i { background: var(--good); } .pill.off { color: var(--danger-text); } .pill.off i { background: var(--critical); } .pill.wait i { background: var(--muted); }
+.meters { display: grid; gap: 7px; margin-top: 12px; }
+.meter { display: grid; grid-template-columns: 42px 1fr 70px; align-items: center; gap: 10px; font-size: 13px; }
+.meter .lbl { color: var(--muted); } .meter .val { text-align: right; }
+.bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+.bar > b { display: block; height: 100%; border-radius: 3px; background: var(--good); transition: width .4s ease; }
+.bar > b.warning { background: var(--warning); } .bar > b.critical { background: var(--critical); }
+.facts { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip { font-size: 12px; padding: 3px 8px; border-radius: 8px; background: rgba(208,59,59,.12); color: var(--danger-text); font-weight: 600; }
+.back { border: 0; background: none; color: var(--link); padding: 4px 0; margin-bottom: 6px; cursor: pointer; font-weight: 500; }
+.dhead { margin-bottom: 10px; } .dhead .sname { font-size: 20px; white-space: normal; }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
+.tile { background: var(--card); border-radius: 12px; padding: 10px 12px; min-width: 0; }
+.tile .k { font-size: 12px; color: var(--muted); } .tile .v { font-size: 22px; font-weight: 650; letter-spacing: -.02em; margin-top: 2px; }
+.tile .s { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.charts .card { margin: 0; }
+.chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.chart-head h3 { margin: 0 0 8px; } .chart-head .now { font-size: 13px; }
+.legend { display: flex; gap: 12px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+canvas.chart { width: 100%; height: 130px; display: block; touch-action: pan-y; }
+.cores { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 6px; }
+.core { height: 44px; border-radius: 6px; background: var(--track); position: relative; overflow: hidden; }
+.core > b { position: absolute; left: 0; right: 0; bottom: 0; background: var(--series-1); border-radius: 4px 4px 0 0; transition: height .4s ease; }
+.core > span { position: absolute; inset: 0; display: flex; align-items: flex-start; justify-content: center; padding-top: 3px; font-size: 10.5px; font-weight: 600; }
+td.r, th.r { text-align: right; } td .bar { margin-top: 4px; }
+.tip { position: fixed; pointer-events: none; z-index: 10; background: var(--text); color: var(--card); font-size: 12px; padding: 6px 8px; border-radius: 8px; white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,.18); }
+@media (max-width: 700px) { .charts { grid-template-columns: 1fr; } }
+@media (max-width: 460px) { .tiles { grid-template-columns: repeat(2, 1fr); } .grid { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { .hide-sm { display: none; } .choice { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <div id="root"></div>
 <div id="toast" class="toast hidden"></div>
+<div id="tip" class="tip" hidden></div>
 <script>
 "use strict";
 // ---------------------------------------------------------------- helpers
@@ -134,7 +179,7 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.add("hidden"), 3200);
 }
 async function api(path, { method = "GET", body } = {}) {
-  const res = await fetch("/portal/api" + path, {
+  const res = await fetch("/api/web" + path, {
     method, credentials: "same-origin",
     headers: body !== undefined ? { "Content-Type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -160,6 +205,7 @@ const ICON = { down: "🔴", offline: "⏹", online: "🟢", connected: "🆕", 
 const S = {
   config: null, me: null, view: "events",
   servers: new Map(), kinds: {}, mutedUntil: null, retention: 30,
+  thresholds: {}, historyMinutes: 60, detail: null, history: new Map(), hover: null,
   events: [], filter: { server: "", kind: "" }, more: true, loading: false,
   accounts: null, accountServers: [], telegramOwners: [], editing: null, created: null,
   added: null, conn: "",
@@ -171,13 +217,22 @@ const S = {
 let ws = null, wsRetry = 0, wsTimer = null;
 function startLive() {
   stopLive();
-  const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/portal`;
+  const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/web`;
   ws = new WebSocket(url);
   ws.onopen = () => { wsRetry = 0; setConn("live"); };
   ws.onmessage = (m) => {
     let msg; try { msg = JSON.parse(m.data); } catch { return; }
     if (msg.type === "event") onLiveEvent(msg.event);
-    else if (msg.type === "server") { S.servers.set(msg.server.id, msg.server); renderLater(); }
+    else if (msg.type === "server") {
+      S.servers.set(msg.server.id, msg.server);
+      const h = S.history.get(msg.server.id);
+      if (h && msg.point) { // keep the charts going
+        h.push(msg.point);
+        const cut = Date.now() / 1000 - S.historyMinutes * 60;
+        while (h.length && h[0][0] < cut) h.shift();
+      }
+      renderLater();
+    }
     else if (msg.type === "removed") { S.servers.delete(msg.id); renderLater(); }
     else if (msg.type === "reload") loadOverview().then(() => reloadEvents());
   };
@@ -213,6 +268,7 @@ async function loadOverview() {
   S.me = o.me;
   S.servers = new Map(o.servers.map((s) => [s.id, s]));
   S.kinds = o.kinds; S.mutedUntil = o.muted_until; S.retention = o.retention_days;
+  S.thresholds = o.thresholds || {}; S.historyMinutes = o.history_minutes || 60;
 }
 async function reloadEvents() {
   S.events = []; S.more = true;
@@ -261,7 +317,7 @@ function renderLogin() {
   return `<div class="login"><div class="top"><h1>🐕 Watchdog</h1></div><div class="card">
     <h2>Log in</h2>${body}
     ${L.step === "password" && c.bot_username ? `<div class="divider">or</div><div id="tg-login" style="text-align:center"></div>` : ""}
-    ${L.step === "password" ? `<p class="small muted" style="margin:14px 0 0">Owner? Send <code>/portal</code> to the bot for a one-time login link.</p>` : ""}
+    ${L.step === "password" ? `<p class="small muted" style="margin:14px 0 0">Owner? Send <code>/login</code> to the bot for a one-time login link.</p>` : ""}
   </div></div>`;
 }
 function bindLogin() {
@@ -314,7 +370,7 @@ window.onTelegramAuth = async (user) => {
 // ---------------------------------------------------------------- views: invite (set password + second step)
 function renderInvite() {
   const I = S.invite;
-  if (I.error && !I.info) return `<div class="login"><div class="top"><h1>🐕 Watchdog</h1></div><div class="card"><h2>Invite</h2><p class="err">${esc(I.error)}</p><p><a href="/portal/">Go to login</a></p></div></div>`;
+  if (I.error && !I.info) return `<div class="login"><div class="top"><h1>🐕 Watchdog</h1></div><div class="card"><h2>Invite</h2><p class="err">${esc(I.error)}</p><p><a href="/">Go to login</a></p></div></div>`;
   if (!I.info) return `<div class="login"><div class="card muted">Loading…</div></div>`;
   const c = I.info;
   const m = I.method;
@@ -371,7 +427,7 @@ function bindInvite() {
     try {
       await api(`/invite/${S.invite.token}/finish`, { method: "POST", body: { password: f.password.value, method: S.invite.method, code: f.code?.value || "" } });
       S.invite = null;
-      history.replaceState(null, "", "/portal/");
+      history.replaceState(null, "", "/");
       await enter();
     } catch (err) { S.invite.error = err.message; render(); }
   };
@@ -416,7 +472,7 @@ function renderOverview() {
 function renderEvents() {
   const activity = S.view === "activity";
   const kinds = Object.entries(S.kinds).filter(([k]) => k !== "audit");
-  let html = activity ? `<div class="card small muted">Who did what in this portal (logins set up, servers added, reboots, account changes). Owners only.</div>` : renderOverview();
+  let html = activity ? `<div class="card small muted">Who did what on this website (logins set up, servers added, reboots, account changes). Owners only.</div>` : renderOverview();
   html += `<div class="card">${activity ? "" : `<div class="filters">
       <select id="f-server"><option value="">All servers</option>${serverList().map((s) => `<option value="${esc(s.id)}" ${S.filter.server === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
       <select id="f-kind"><option value="">All types</option>${kinds.map(([k, l]) => `<option value="${k}" ${S.filter.kind === k ? "selected" : ""}>${ICON[k] || ""} ${esc(l)}</option>`).join("")}</select>
@@ -440,9 +496,70 @@ function renderEvents() {
   return html + `</div>`;
 }
 
+// ---------------------------------------------------------------- servers (like the Telegram dashboard)
+const pct = (v) => (v == null ? "—" : `${Math.round(v)}%`);
+function fmtBytes(n) {
+  if (n == null) return "—";
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (Math.abs(n) >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return i === 0 ? `${Math.round(n)} B` : `${n.toFixed(n >= 100 ? 0 : 1)} ${u[i]}`;
+}
+const fmtRate = (n) => (n == null ? "—" : `${fmtBytes(n)}/s`);
+function fmtDur(sec) {
+  if (sec == null) return "—";
+  sec = Math.max(0, Math.floor(sec));
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  if (d) return `${d}d ${h}h`; if (h) return `${h}h ${m}m`; if (m) return `${m}m`; return `${s}s`;
+}
+const fmtClock = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const nowS = () => Date.now() / 1000;
+function level(v, key) {
+  const t = S.thresholds[key];
+  if (v == null || !t) return "";
+  if (v >= t) return "critical";
+  if (v >= t - 15) return "warning";
+  return "";
+}
+function worstDisk(m) {
+  const d = (m && m.disks) || [];
+  return d.length ? d.reduce((a, b) => (b.percent > a.percent ? b : a)) : null;
+}
+function meter(label, value, key, right) {
+  return `<div class="meter"><span class="lbl">${label}</span>
+    <div class="bar"><b class="${level(value, key)}" style="width:${Math.min(100, Math.max(0, value || 0))}%"></b></div>
+    <span class="val num">${right ?? pct(value)}</span></div>`;
+}
+function statusPill(s) {
+  if (s.status === "pending") return `<span class="pill wait"><i></i>Waiting</span>`;
+  if (s.status === "online") return `<span class="pill on"><i></i>Online</span>`;
+  const why = s.offline_reason === "shutdown" ? "Shut down" : s.offline_reason === "agent_stopped" ? "Agent stopped" : "Offline";
+  return `<span class="pill off"><i></i>${why} · ${fmtDur(nowS() - (s.status_since || nowS()))}</span>`;
+}
+function serverCard(s) {
+  const m = s.metrics || {};
+  const head = `<div class="sh"><span class="sname">${esc(s.name)}</span>${statusPill(s)}</div>`;
+  if (s.status === "pending") return `<div class="card server" data-server="${esc(s.id)}">${head}<div class="facts"><span>Waiting for its first report</span></div></div>`;
+  if (s.status !== "online") {
+    return `<div class="card server" data-server="${esc(s.id)}">${head}<div class="facts"><span>Last seen ${s.last_seen ? fmtTime(s.last_seen) : "never"}</span>${m.os ? `<span>${esc(m.os)}</span>` : ""}</div></div>`;
+  }
+  const disk = worstDisk(m), temp = m.temp && m.temp.max, net = m.net || {};
+  const chips = (s.alerts || []).map((a) => `<span class="chip">⚠ ${esc(a.label)}</span>`).join("") + (s.reboot_pending ? `<span class="chip">⏳ rebooting</span>` : "");
+  return `<div class="card server" data-server="${esc(s.id)}">${head}
+    <div class="meters">
+      ${meter("CPU", m.cpu && m.cpu.percent, "cpu")}
+      ${meter("RAM", m.mem && m.mem.percent, "ram")}
+      ${disk ? meter("Disk", disk.percent, "disk") : ""}
+      ${temp != null ? meter("Temp", Math.min(100, temp), "temp", `${Math.round(temp)}°C`) : ""}
+    </div>
+    <div class="facts num"><span>Up ${fmtDur(m.uptime)}</span><span>↓ ${fmtRate(net.rx_rate)}</span><span>↑ ${fmtRate(net.tx_rate)}</span>
+      ${m.cpu && m.cpu.load ? `<span>Load ${m.cpu.load[0].toFixed(2)}</span>` : ""}</div>
+    ${chips ? `<div class="chips">${chips}</div>` : ""}</div>`;
+}
+
 function renderServers() {
+  if (S.detail) return renderServerDetail();
   const me = S.me;
-  const list = serverList();
   let html = "";
   if (me.can_operate) {
     html += `<div class="card"><h2>Add a server</h2>
@@ -453,26 +570,168 @@ function renderServers() {
         <p class="small muted">To allow remote reboots from here, also add <code>ALLOW_REMOTE_REBOOT=true</code> to its .env.</p>
         <button class="btn small" id="added-done">Done</button></div>` : ""}</div>`;
   }
-  html += `<div class="card"><h2>${me.is_owner ? "All servers" : "Your servers"}</h2>`;
-  if (!list.length) html += `<p class="muted small">No servers ${me.is_owner ? "yet" : "assigned to you yet — ask an owner"}.</p>`;
-  else {
-    html += `<table><tr><th>Server</th><th class="hide-sm">Since</th><th class="hide-sm">Version</th>${me.can_operate ? "<th></th>" : ""}</tr>`;
-    for (const s of list) {
-      const state = s.status === "pending" ? "never connected" : s.status;
-      let reboot = "";
-      if (me.can_operate) {
-        const why = s.reboot_pending ? "Reboot requested…" : s.status !== "online" ? "Offline: it can't receive a reboot" : !s.allow_reboot ? "Not allowed: set ALLOW_REMOTE_REBOOT=true in its .env" : "";
-        reboot = `<td style="text-align:right"><button class="btn small" data-reboot="${esc(s.id)}" ${why ? `disabled title="${esc(why)}"` : ""}>${s.reboot_pending ? "⏳ Rebooting…" : "🔁 Reboot"}</button>
-          ${why && !s.reboot_pending ? `<div class="small muted" style="margin-top:3px">${esc(why)}</div>` : ""}</td>`;
-      }
-      html += `<tr><td><span class="dot ${s.status}"></span> <b>${esc(s.name)}</b> <span class="muted small">${esc(state)}</span>
-          ${s.alerts.length ? `<span class="badge warn">⚠️ ${s.alerts.length}</span>` : ""}<div class="small muted">last report ${fmtAgo(s.last_seen)}</div></td>
-        <td class="hide-sm small">${fmtTime(s.status_since)}</td><td class="hide-sm"><code>${esc(s.version || "—")}</code></td>${reboot}</tr>`;
-    }
-    html += `</table>`;
-  }
-  return html + `</div>`;
+  const rank = { offline: 0, online: 1, pending: 2 };
+  const list = serverList().sort((a, b) => rank[a.status] - rank[b.status] || a.name.localeCompare(b.name));
+  if (!list.length) return html + `<div class="card muted small">No servers ${me.is_owner ? "yet" : "assigned to you yet — ask an owner"}.</div>`;
+  return html + `<div class="grid">${list.map(serverCard).join("")}</div>`;
 }
+
+function tile(k, v, s) { return `<div class="tile"><div class="k">${k}</div><div class="v num">${v}</div><div class="s">${s || "&nbsp;"}</div></div>`; }
+function chartCard(id, title, now, legend) {
+  return `<div class="card"><div class="chart-head"><h3>${title}</h3>${legend ? `<div class="legend">${legend}</div>` : `<span class="now num">${now}</span>`}</div>
+    <canvas class="chart" id="${id}"></canvas></div>`;
+}
+function renderServerDetail() {
+  const s = S.servers.get(S.detail);
+  if (!s) return `<button class="back" data-back>‹ All servers</button><div class="card muted">This server is gone (removed, or no longer assigned to you).</div>`;
+  const m = s.metrics || {};
+  const cpu = m.cpu || {}, mem = m.mem || {}, net = m.net || {}, temp = m.temp;
+  const online = s.status === "online";
+  let reboot = "";
+  if (S.me.can_operate) {
+    const why = s.reboot_pending ? "" : !online ? "Offline: it can't receive a reboot" : !s.allow_reboot ? "Not allowed: set ALLOW_REMOTE_REBOOT=true in its .env" : "";
+    reboot = `<button class="btn small" data-reboot="${esc(s.id)}" ${why || s.reboot_pending ? "disabled" : ""} title="${esc(why)}">${s.reboot_pending ? "⏳ Rebooting…" : "🔁 Reboot"}</button>
+      ${why ? `<span class="small muted">${esc(why)}</span>` : ""}`;
+  }
+  let html = `<button class="back" data-back>‹ All servers</button>
+    <div class="dhead"><div class="sh"><span class="sname">${esc(s.name)}</span>${statusPill(s)}</div>
+    <div class="facts"><span>${esc(m.os || "")} ${esc(m.arch || "")}</span>${online ? `<span>Up ${fmtDur(m.uptime)}</span>` : ""}
+      <span class="num">Updated ${s.last_seen ? fmtDur(nowS() - s.last_seen) + " ago" : "never"}</span>${s.version ? `<span class="num">v ${esc(s.version)}</span>` : ""}</div>
+    ${reboot ? `<div class="row" style="margin-top:10px">${reboot}</div>` : ""}</div>`;
+  if (!s.metrics) return html + `<div class="card muted">No report from this server yet.</div>`;
+  if ((s.alerts || []).length) {
+    html += `<div class="card">${s.alerts.map((a) => `<div class="chip" style="display:inline-block;margin:2px 4px 2px 0">⚠ ${esc(a.label)}${a.detail ? " · " + esc(a.detail) : ""} — ${Math.round(a.value)}${esc(a.unit || "")} · for ${fmtDur(nowS() - a.since)}</div>`).join("")}</div>`;
+  }
+  html += `<div class="tiles">
+    ${tile("CPU", pct(cpu.percent), cpu.count ? `${cpu.count} cores${cpu.freq_mhz ? " · " + (cpu.freq_mhz / 1000).toFixed(1) + " GHz" : ""}` : "")}
+    ${tile("RAM", pct(mem.percent), mem.total ? `${fmtBytes(mem.used)} of ${fmtBytes(mem.total)}` : "")}
+    ${tile("Temp", temp ? `${Math.round(temp.max)}°C` : "—", temp ? esc(temp.max_label) : "no sensors")}
+    ${tile("Load", cpu.load ? cpu.load[0].toFixed(2) : "—", cpu.load ? `${cpu.load[1].toFixed(2)} · ${cpu.load[2].toFixed(2)}` : "")}</div>`;
+  html += `<div class="charts">${chartCard("c-cpu", "CPU %", pct(cpu.percent))}${chartCard("c-ram", "RAM %", pct(mem.percent))}
+    ${temp ? chartCard("c-temp", "Temperature °C", `${Math.round(temp.max)}°C`) : ""}
+    ${chartCard("c-net", "Network", "", `<span><i style="background:var(--series-1)"></i>↓ ${fmtRate(net.rx_rate)}</span><span><i style="background:var(--series-2)"></i>↑ ${fmtRate(net.tx_rate)}</span>`)}</div><div style="height:10px"></div>`;
+  if (cpu.per_core && cpu.per_core.length > 1) {
+    html += `<div class="card"><h3>Cores</h3><div class="cores">${cpu.per_core.map((v, i) => `<div class="core" title="Core ${i}: ${Math.round(v)}%"><b style="height:${v}%"></b><span class="num">${Math.round(v)}</span></div>`).join("")}</div></div>`;
+  }
+  if ((m.disks || []).length) {
+    html += `<div class="card"><h3>Disks</h3><table><tr><th>Mount</th><th class="r">Used</th><th class="r">Size</th></tr>
+      ${m.disks.map((d) => `<tr><td>${esc(d.mount)}<div class="bar"><b class="${level(d.percent, "disk")}" style="width:${d.percent}%"></b></div></td><td class="r num">${pct(d.percent)}</td><td class="r num">${fmtBytes(d.total)}</td></tr>`).join("")}</table>
+      ${m.diskio ? `<div class="facts num"><span>Read ${fmtRate(m.diskio.read_rate)}</span><span>Write ${fmtRate(m.diskio.write_rate)}</span>${m.swap && m.swap.total ? `<span>Swap ${pct(m.swap.percent)} of ${fmtBytes(m.swap.total)}</span>` : ""}</div>` : ""}</div>`;
+  }
+  const procs = m.procs;
+  if (procs && procs.top_cpu) {
+    html += `<div class="card"><h3>Top processes · ${procs.count} total</h3><table><tr><th>Name</th><th class="r">PID</th><th class="r">CPU</th><th class="r">RAM</th></tr>
+      ${procs.top_cpu.map((p) => `<tr><td>${esc(p.name)}</td><td class="r num muted">${p.pid}</td><td class="r num">${p.cpu.toFixed(1)}%</td><td class="r num">${p.mem.toFixed(1)}%</td></tr>`).join("")}</table></div>`;
+  }
+  if (temp && temp.sensors && temp.sensors.length > 1) {
+    html += `<div class="card"><h3>Sensors</h3><table>${temp.sensors.map((t) => `<tr><td>${esc(t.chip)} <span class="muted">${esc(t.label)}</span></td><td class="r num">${t.current.toFixed(0)}°C</td></tr>`).join("")}</table></div>`;
+  }
+  return html;
+}
+
+async function openServer(id) {
+  S.detail = id; S.hover = null;
+  render();
+  window.scrollTo(0, 0);
+  try { const r = await api(`/servers/${encodeURIComponent(id)}/history`); S.history.set(id, r.history); }
+  catch (e) { toast(e.message); }
+  render();
+}
+
+// charts (same drawing as the Telegram dashboard)
+function drawCharts() {
+  if (S.view !== "servers" || !S.detail) return;
+  const s = S.servers.get(S.detail); if (!s) return;
+  const h = S.history.get(S.detail) || [];
+  const th = S.thresholds;
+  const tEnd = nowS(), tStart = tEnd - S.historyMinutes * 60;
+  const c1 = cssVar("--series-1"), c2 = cssVar("--series-2");
+  const o = { tStart, tEnd, gap: Math.max(20, ((s.metrics && s.metrics.interval) || 5) * 4) };
+  lineChart("c-cpu", h, [{ i: 1, color: c1, name: "CPU", fmt: pct }], { ...o, min: 0, max: 100, threshold: th.cpu });
+  lineChart("c-ram", h, [{ i: 2, color: c1, name: "RAM", fmt: pct }], { ...o, min: 0, max: 100, threshold: th.ram });
+  lineChart("c-temp", h, [{ i: 3, color: c1, name: "Temp", fmt: (v) => `${Math.round(v)}°C` }], { ...o, min: 20, threshold: th.temp });
+  lineChart("c-net", h, [{ i: 4, color: c1, name: "↓ In", fmt: fmtRate }, { i: 5, color: c2, name: "↑ Out", fmt: fmtRate }], { ...o, min: 0, axisFmt: fmtBytes });
+}
+function lineChart(id, hist, series, o) {
+  const cv = document.getElementById(id); if (!cv) return;
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr);
+  const pad = { l: 4, r: 44, t: 8, b: 18 }, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  let lo = o.min ?? Infinity, hi = o.max ?? -Infinity;
+  if (o.max == null || o.min == null) {
+    for (const p of hist) for (const s of series) { const v = p[s.i]; if (v != null) { if (o.min == null) lo = Math.min(lo, v); if (o.max == null) hi = Math.max(hi, v); } }
+    if (o.threshold && o.max == null) hi = Math.max(hi, o.threshold + 5);
+    if (!isFinite(hi)) hi = 1; if (!isFinite(lo)) lo = 0;
+    if (o.max == null) hi = hi <= 0 ? 1 : hi * 1.15;
+    if (hi - lo < 1) hi = lo + 1;
+  }
+  const x = (t) => pad.l + ((t - o.tStart) / (o.tEnd - o.tStart)) * pw;
+  const y = (v) => pad.t + ph - ((v - lo) / (hi - lo)) * ph;
+  const muted = cssVar("--muted"), grid = cssVar("--line");
+  ctx.font = "10.5px -apple-system, system-ui, sans-serif"; ctx.textBaseline = "middle"; ctx.lineWidth = 1;
+  for (let k = 0; k <= 2; k++) {
+    const v = lo + (hi - lo) * (k / 2), yy = Math.round(y(v)) + .5;
+    ctx.strokeStyle = grid; ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(pad.l + pw, yy); ctx.stroke();
+    ctx.fillStyle = muted; ctx.textAlign = "left"; ctx.fillText(o.axisFmt ? o.axisFmt(v) : Math.round(v), pad.l + pw + 6, yy);
+  }
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic"; ctx.fillStyle = muted;
+  ctx.fillText(`-${Math.round((o.tEnd - o.tStart) / 60)}m`, pad.l, H - 3);
+  ctx.textAlign = "right"; ctx.fillText("now", pad.l + pw, H - 3);
+  if (o.threshold && o.threshold > lo && o.threshold < hi) {
+    const ty = Math.round(y(o.threshold)) + .5;
+    ctx.strokeStyle = cssVar("--threshold"); ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(pad.l, ty); ctx.lineTo(pad.l + pw, ty); ctx.stroke(); ctx.setLineDash([]);
+  }
+  if (!hist.length) { ctx.fillStyle = muted; ctx.textAlign = "center"; ctx.fillText("collecting data…", pad.l + pw / 2, pad.t + ph / 2); cv._chart = null; return; }
+  for (const s of series) {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.beginPath(); let prev = null;
+    for (const p of hist) {
+      const v = p[s.i]; if (v == null || p[0] < o.tStart) { prev = null; continue; }
+      const px = x(p[0]), py = y(Math.min(hi, Math.max(lo, v)));
+      if (prev && p[0] - prev <= o.gap) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+      prev = p[0];
+    }
+    ctx.stroke();
+  }
+  cv._chart = { hist, series, x, y, lo, hi, pad, pw, ph, o };
+  if (S.hover && S.hover.id === id) drawHover(cv, ctx, S.hover.idx);
+}
+function drawHover(cv, ctx, idx) {
+  const c = cv._chart; if (!c) return;
+  const p = c.hist[idx]; if (!p) return;
+  const px = c.x(p[0]);
+  ctx.strokeStyle = cssVar("--muted"); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(Math.round(px) + .5, c.pad.t); ctx.lineTo(Math.round(px) + .5, c.pad.t + c.ph); ctx.stroke();
+  for (const s of c.series) {
+    const v = p[s.i]; if (v == null) continue;
+    const py = c.y(Math.min(c.hi, Math.max(c.lo, v)));
+    ctx.fillStyle = cssVar("--card"); ctx.beginPath(); ctx.arc(px, py, 5.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.fill();
+  }
+}
+function onPointer(ev) {
+  const cv = ev.target.closest && ev.target.closest("canvas.chart");
+  const tip = $("#tip");
+  if (!cv || !cv._chart) { if (S.hover) { S.hover = null; tip.hidden = true; drawCharts(); } return; }
+  const c = cv._chart, r = cv.getBoundingClientRect();
+  const t = c.o.tStart + ((ev.clientX - r.left - c.pad.l) / c.pw) * (c.o.tEnd - c.o.tStart);
+  let idx = -1, bd = Infinity;
+  for (let i = 0; i < c.hist.length; i++) { const d = Math.abs(c.hist[i][0] - t); if (d < bd) { bd = d; idx = i; } }
+  if (idx < 0) return;
+  S.hover = { id: cv.id, idx };
+  drawCharts();
+  const p = c.hist[idx];
+  tip.innerHTML = `<span class="num">${fmtClock(p[0])}</span>` + c.series.map((s) => `<br><span style="color:${s.color}">■</span> ${s.name} <b class="num">${p[s.i] == null ? "—" : s.fmt(p[s.i])}</b>`).join("");
+  tip.hidden = false;
+  const tw = tip.offsetWidth;
+  let left = ev.clientX + 12; if (left + tw > window.innerWidth - 8) left = ev.clientX - tw - 12;
+  tip.style.left = `${Math.max(8, left)}px`; tip.style.top = `${r.top + 4}px`;
+}
+document.addEventListener("pointermove", onPointer);
+document.addEventListener("pointerdown", onPointer);
+window.addEventListener("resize", () => drawCharts());
 
 const ROLE = { owner: "Owner", staff: "Staff", user: "User" };
 const ROLE_HELP = { owner: "every server, accounts, activity", staff: "assigned servers; add + reboot", user: "assigned servers, read only" };
@@ -555,13 +814,14 @@ function render() {
   }
   if (S.invite) bindInvite();
   else if (!S.me) bindLogin();
-  else bindApp();
+  else { bindApp(); drawCharts(); }
 }
 
 function bindApp() {
   $("#logout").onclick = async () => { await api("/logout", { method: "POST", body: {} }).catch(() => {}); S.me = null; stopLive(); render(); };
   document.querySelectorAll("[data-view]").forEach((b) => (b.onclick = async () => {
     S.view = b.dataset.view;
+    S.detail = null;
     if (S.view === "events" || S.view === "activity") { if (S.view === "activity") S.filter = { server: "", kind: "" }; reloadEvents(); }
     if (S.view === "accounts") { render(); try { await loadAccounts(); } catch (e) { toast(e.message); } }
     render();
@@ -579,6 +839,9 @@ function bindApp() {
     catch (err) { toast(err.message); }
     render();
   };
+  document.querySelectorAll("[data-server]").forEach((c) => (c.onclick = () => openServer(c.dataset.server)));
+  const back = $("[data-back]");
+  if (back) back.onclick = () => { S.detail = null; S.hover = null; $("#tip").hidden = true; render(); };
   const ad = $("#added-done");
   if (ad) ad.onclick = () => { S.added = null; render(); };
   document.querySelectorAll("[data-reboot]").forEach((b) => (b.onclick = async () => {
@@ -647,7 +910,7 @@ async function boot() {
   try { S.config = await api("/config"); } catch { S.config = {}; }
   const link = /^#login=([A-Za-z0-9_-]+)$/.exec(location.hash);
   if (link) {
-    history.replaceState(null, "", "/portal/"); // the link works once: don't keep it in the address bar
+    history.replaceState(null, "", "/"); // the link works once: don't keep it in the address bar
     try { await api("/login/link", { method: "POST", body: { token: link[1] } }); }
     catch (e) { S.login.error = e.message; }
   }
@@ -660,7 +923,7 @@ async function boot() {
   }
   try { await enter(); } catch { S.me = null; render(); }
 }
-setInterval(() => S.me && (S.view === "events" || S.view === "servers") && renderLater(), 60000); // refresh "x min ago"
+setInterval(() => S.me && (S.view === "events" || S.view === "servers") && renderLater(), 30000); // refresh "x min ago"
 boot();
 </script>
 </body>

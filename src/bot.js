@@ -24,7 +24,7 @@ export const COMMANDS = [
   { command: "version", description: "Versions of main + sub servers" },
   { command: "update", description: "Update from GitHub: /update all | subs | main | <name>" },
   { command: "dashboard", description: "Open the live dashboard" },
-  { command: "portal", description: "One-time login link for the web portal" },
+  { command: "login", description: "One-time login link for the website" },
   { command: "mute", description: "Mute notifications: /mute 60" },
   { command: "unmute", description: "Turn notifications back on" },
   { command: "help", description: "Help" },
@@ -41,7 +41,7 @@ const HELP =
   "/status — CPU, RAM, disk, temperature of every server\n" +
   "/alerts — servers down + active alerts\n" +
   "/dashboard — live charts\n" +
-  "/portal — log in to the web portal (notification history, accounts)\n" +
+  "/login — log in to the website (servers, notification history, accounts)\n" +
   "/mute 60 · /unmute — silence notifications\n\n" +
   "<b>Updates</b> (from your GitHub repo)\n" +
   "/version — which version each server runs\n" +
@@ -460,16 +460,16 @@ export function createBot(cfg, monitor, notifier, botOptions = {}, updateMain = 
   };
   bot.command("dashboard", showDashboard);
 
-  // ---- web portal: a one-time login link (owners = ADMIN_IDS; the bot already knows who you are)
-  bot.command("portal", (ctx) => {
+  // ---- website: a one-time login link (owners = ADMIN_IDS; the bot already knows who you are)
+  bot.command("login", (ctx) => {
     if (!isPrivate(ctx)) return ctx.reply("For safety, login links are only sent in a private chat with the bot.");
-    if (!accounts) return ctx.reply("The web portal is not available on this server.");
+    if (!accounts) return ctx.reply("The website is not available on this server.");
     const base = cfg.publicUrl || (cfg.webappUrl ? new URL(cfg.webappUrl).origin : "");
     if (!base) return ctx.reply("Set <code>PUBLIC_URL</code> in .env first.", HTML);
-    const url = `${base}/portal/#login=${accounts.loginLink(ctx.from.id, tgName(ctx.from))}`;
-    return ctx.reply("🌐 <b>Web portal</b>\nThis button logs you in once, within 10 minutes. Don't forward it.", {
+    const url = `${base}/#login=${accounts.loginLink(ctx.from.id, tgName(ctx.from))}`;
+    return ctx.reply("🌐 <b>Website</b>\nThis button logs you in once, within 10 minutes. Don't forward it.", {
       ...HTML,
-      reply_markup: new InlineKeyboard().url("Open the web portal", url),
+      reply_markup: new InlineKeyboard().url("Open the website", url),
     });
   });
 

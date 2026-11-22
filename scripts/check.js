@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // Self-check of a main-server install: `watchdog-main test` (or `node scripts/check.js`).
-// Reads .env, then checks Telegram, the local port, the public HTTPS address, the data file
+// Reads .env, then checks Telegram, the local port, the public HTTPS address, PostgreSQL
 // and both GitHub repos. Changes nothing. Exit code 1 if any check failed.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENV_FILE, readConfig } from "../src/config.js";
 import { createUpdater, remoteHeads } from "../src/updater.js";
+import { PgBackend, safeUrl } from "../src/db.js";
 
 const APP_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const results = { ok: 0, warn: 0, fail: 0 };
@@ -127,20 +128,23 @@ if (cfg.webappUrl) {
   warn("WEBAPP_URL", "not set: no dashboard button in Telegram");
 }
 
-// ---------------------------------------------------------------- data file
-try {
-  const dir = path.dirname(cfg.dataFile);
-  fs.accessSync(dir, fs.constants.W_OK);
-  if (fs.existsSync(cfg.dataFile)) {
-    const data = JSON.parse(fs.readFileSync(cfg.dataFile, "utf8"));
-    fs.accessSync(cfg.dataFile, fs.constants.W_OK);
-    ok("data file", `${cfg.dataFile} (${Object.keys(data.servers || {}).length} server(s))`);
-  } else {
-    ok("data file", `${cfg.dataFile} doesn't exist yet (created on first use)`);
+// ---------------------------------------------------------------- PostgreSQL
+{
+  const db = new PgBackend(cfg.databaseUrl);
+  try {
+    await db.init({ tries: 1 });
+    const { rows } = await db.pool.query(
+      "SELECT (SELECT count(*) FROM wd_servers)::int AS servers, (SELECT count(*) FROM wd_accounts)::int AS accounts, (SELECT count(*) FROM wd_events)::int AS events",
+    );
+    const r = rows[0];
+    ok("database", `${safeUrl(cfg.databaseUrl)} · ${r.servers} server(s), ${r.accounts} account(s), ${r.events} notification(s)`);
+  } catch (e) {
+    fail("database", `${e.message} (DATABASE_URL in .env; is PostgreSQL running?)`);
+  } finally {
+    await db.close().catch(() => {});
   }
-} catch (e) {
-  fail("data file", `${cfg.dataFile}: ${e.code === "EACCES" ? "not writable by this user" : e.message}`);
 }
+if (fs.existsSync(cfg.dataFile)) warn("old data file", `${cfg.dataFile} is still there: it is imported only into an empty database`);
 
 // ---------------------------------------------------------------- GitHub (two repos)
 const u = await createUpdater({ appDir: APP_DIR, branch: cfg.updateBranch || undefined, githubToken: cfg.githubToken, auto: cfg.autoUpdate, log: () => {} });

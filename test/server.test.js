@@ -12,7 +12,7 @@ before(async () => {
   origLog = console.log;
   console.log = () => {};
   const cfg = testConfig();
-  store = new Store(cfg.dataFile);
+  store = new Store();
   const notifier = new Notifier(null, cfg, store, { batchMs: 0 });
   let broadcast = () => {};
   mon = new Monitor(cfg, store, () => {}, (m) => broadcast(m));

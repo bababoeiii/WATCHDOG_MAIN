@@ -13,6 +13,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { buildNginx, writeNginxFile } from "./nginx.js";
+import { PgBackend } from "../src/db.js";
 
 const APP_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ENV_FILE = path.join(APP_DIR, ".env");
@@ -131,6 +132,31 @@ const timezone = await ask(
   flag("timezone"),
 );
 
+// PostgreSQL (required). In aaPanel: Databases → PgSQL → Add database (name, user, password).
+let databaseUrl = "";
+for (let attempt = 1; ; attempt++) {
+  databaseUrl = await ask(
+    "PostgreSQL connection — aaPanel → Databases → PgSQL → Add database, then postgres://USER:PASSWORD@127.0.0.1:5432/DATABASE",
+    current.DATABASE_URL || "",
+    (v) => (/^postgres(ql)?:\/\/[^/]+\/[^/?]+/i.test(v) ? null : "must look like postgres://USER:PASSWORD@127.0.0.1:5432/DATABASE"),
+    attempt === 1 ? flag("database-url") : undefined,
+  );
+  const db = new PgBackend(databaseUrl);
+  try {
+    await db.init({ tries: 1 });
+    console.log("  ✔ connected, tables ready");
+    break;
+  } catch (e) {
+    console.error(`  ✖ ${e.message}`);
+    if (YES || attempt >= 3) {
+      console.error("Fix the connection (database, user, password, PostgreSQL running) and run this again.");
+      process.exit(1);
+    }
+  } finally {
+    await db.close().catch(() => {});
+  }
+}
+
 const behindProxy = /^y/i.test(
   await ask("Is aaPanel / nginx in front of it (recommended)? y/n", "y", () => null, process.argv.includes("--direct") ? "n" : undefined),
 );
@@ -166,6 +192,7 @@ for (const [k, v] of Object.entries({
   HOST: host,
   PORT: port,
   TIMEZONE: timezone,
+  DATABASE_URL: databaseUrl,
 })) text = setKey(text, k, v);
 fs.writeFileSync(ENV_FILE, text, { mode: 0o600 });
 

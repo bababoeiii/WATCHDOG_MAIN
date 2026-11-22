@@ -9,6 +9,7 @@ import { createBot, runBot } from "./bot.js";
 import { createServer } from "./server.js";
 import { esc, setTimezone } from "./format.js";
 import { EventLog } from "./events.js";
+import { importLegacyFiles, PgBackend, safeUrl } from "./db.js";
 import { Accounts } from "./accounts.js";
 import { createMailer } from "./mailer.js";
 
@@ -18,7 +19,19 @@ if (!setTimezone(cfg.timezone)) console.warn(`Unknown TIMEZONE "${cfg.timezone}"
 
 // Log stray async errors instead of crashing: a crash would drop live history and alert state.
 process.on("unhandledRejection", (e) => console.error("unhandled rejection:", e));
-const store = new Store(cfg.dataFile);
+// ---------------------------------------------------------------- PostgreSQL
+const db = new PgBackend(cfg.databaseUrl);
+try {
+  await db.init();
+  const imported = await importLegacyFiles(db, cfg.dataFile, path.join(path.dirname(cfg.dataFile), "events.jsonl"));
+  if (imported) console.log(imported);
+} catch (e) {
+  console.error(`Watchdog: ${e.message}`);
+  console.error("Check DATABASE_URL in .env (user, password, database name, and that PostgreSQL is running).");
+  process.exit(1);
+}
+console.log(`Database: ${safeUrl(cfg.databaseUrl)}`);
+const store = await Store.open(db);
 
 // The monitor pushes to the dashboard through `broadcast`, which exists once the HTTP server does.
 let broadcast = () => {};
@@ -26,7 +39,8 @@ const notifier = new Notifier(null, cfg, store);
 
 // Every notification goes into the event log (the web portal's history, also while muted),
 // then to Telegram — unless meta.telegram is false (the bot reports that one another way).
-const events = new EventLog(path.join(path.dirname(cfg.dataFile), "events.jsonl"), cfg.notifyHistoryDays);
+const events = new EventLog(db, cfg.notifyHistoryDays);
+await events.load();
 function notify(text, important = false, meta = {}) {
   events.add({ kind: meta.kind || "main", text, server: meta.server || null, important, muted: notifier.isMuted() });
   if (meta.telegram !== false) notifier.send(text, important);
@@ -176,13 +190,13 @@ async function shutdown(reason) {
   shuttingDown = true;
   console.log(`Shutting down (${reason})`);
   monitor.stop();
-  events.stop();
   u?.stop();
-  store.flush();
   setTimeout(() => process.exit(0), 8000).unref(); // never hang
+  await Promise.all([store.flush(), events.stop()]); // everything into the database
   await notifier.flush(5000); // let queued Telegram messages go out first
   realBot.stop().catch(() => {});
   await http.close();
+  await db.close().catch(() => {});
   process.exit(0);
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));

@@ -4,8 +4,8 @@
 #   watchdog-main start     start the service and wait until it answers
 #   watchdog-main restart   restart it (Telegram bot + dashboard are back within seconds)
 #   watchdog-main reload    re-read .env without a restart; lists settings that still need one
-#   watchdog-main test      self-check: .env, bot token, notification groups, port, HTTPS, data, GitHub
-#   watchdog-main health    service state, recent errors, connectivity + sub servers, version
+#   watchdog-main test      self-check: .env, bot token, notification groups, port, HTTPS, database, GitHub
+#   watchdog-main health    service state, recent errors, connectivity, database + sub servers, version
 set -uo pipefail
 SERVICE="${WATCHDOG_SERVICE:-watchdog-main}"
 UNIT="/etc/systemd/system/$SERVICE.service"
@@ -131,22 +131,11 @@ else echo "✖ public   $PUBLIC_URL/healthz doesn't answer (nginx / SSL / DNS?)"
 if curl -sS -o /dev/null -m 6 https://api.telegram.org 2>/dev/null; then echo "✔ Telegram api.telegram.org reachable"
 else echo "✖ Telegram api.telegram.org not reachable (no notifications)"; bad=1; fi
 
-echo; echo "== Sub servers"
-DATA="$(env_get DATA_FILE)"; DATA="${DATA:-data/watchdog.json}"; [[ "$DATA" == /* ]] || DATA="$APP/$DATA"
-if [[ -f "$DATA" && -n "$NODE" ]]; then
-  "$NODE" -e '
-    const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-    const list = Object.values(d.servers || {}).sort((a, b) => a.name.localeCompare(b.name));
-    const n = (st) => list.filter((s) => s.status === st).length;
-    if (!list.length) { console.log("  none yet (/add <name> in Telegram)"); process.exit(0); }
-    console.log(`${n("offline") ? "⚠" : "✔"} 🟢 ${n("online")} online · 🔴 ${n("offline")} offline · ⚪ ${n("pending")} never connected`);
-    const when = (t) => (t ? new Date(t * 1000).toLocaleString("sv-SE").slice(0, 16) : "?");
-    const reason = { timeout: "no reports", shutdown: "shut down", agent_stopped: "agent stopped" };
-    for (const s of list.filter((s) => s.status === "offline"))
-      console.log(`   🔴 ${s.name} — since ${when(s.statusSince)} (${reason[s.offlineReason] || "offline"})`);
-  ' "$DATA" 2>/dev/null || echo "⚠ can't read $DATA"
+echo; echo "== Database + sub servers"
+if [[ -f scripts/servers.js ]]; then
+  as_user "$NODE" scripts/servers.js || bad=1
 else
-  echo "  no data file yet ($DATA)"
+  echo "  (update the main server for this section)"
 fi
 
 echo; echo "== Version"

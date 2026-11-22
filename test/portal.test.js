@@ -2,18 +2,17 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import fs from "node:fs";
 import net from "node:net";
-import path from "node:path";
 import { WebSocket } from "ws";
 import { createServer } from "../src/server.js";
 import { Monitor } from "../src/monitor.js";
 import { Notifier } from "../src/notifier.js";
 import { Store } from "../src/store.js";
 import { EventLog } from "../src/events.js";
+import { MemoryBackend } from "../src/db.js";
 import { Accounts, base32Decode, base32Encode, checkPassword, hashPassword, totpCode, verifyTelegramLogin, verifyTotp } from "../src/accounts.js";
 import { createMailer } from "../src/mailer.js";
-import { BOT_TOKEN, report, testConfig, tmpFile } from "./helpers.js";
+import { BOT_TOKEN, report, testConfig } from "./helpers.js";
 
 // ---------------------------------------------------------------- units
 test("TOTP matches the RFC 6238 test vectors (SHA-1, last 6 digits)", () => {
@@ -54,14 +53,17 @@ test("Telegram login widget data: valid, tampered, foreign bot, expired", () => 
   assert.equal(verifyTelegramLogin(null, BOT_TOKEN), null);
 });
 
-test("event log: kept across restarts, old entries dropped, newest first, filtered", () => {
-  const file = tmpFile("events.jsonl");
-  const old = { id: 1, ts: Date.now() / 1000 - 40 * 86400, kind: "down", server: "a", text: "old" };
-  fs.writeFileSync(file, JSON.stringify(old) + "\nnot json\n");
-  let log = new EventLog(file, 30);
+test("event log: kept across restarts, old entries dropped, newest first, filtered", async () => {
+  const be = new MemoryBackend();
+  await be.insertEvents([{ id: 1, ts: Date.now() / 1000 - 40 * 86400, kind: "down", server: "a", text: "old" }]);
+  let log = new EventLog(be, 30);
+  await log.load();
   assert.equal(log.events.length, 0); // 40 days old: gone
+  assert.equal(be.events.length, 0);
   for (let i = 0; i < 5; i++) log.add({ kind: i % 2 ? "alert" : "down", text: `<b>e${i}</b>`, server: { id: i < 3 ? "a" : "b", name: "x" } });
-  log = new EventLog(file, 30); // "restart"
+  await log.stop();
+  log = new EventLog(be, 30); // "restart"
+  await log.load();
   assert.equal(log.events.length, 5);
   assert.equal(log.events[0].text, "e0"); // stored as plain text
   assert.ok(log.nextId > 5);
@@ -70,6 +72,25 @@ test("event log: kept across restarts, old entries dropped, newest first, filter
   assert.deepEqual(log.query({ visible: (e) => e.server === "a" }).map((e) => e.text), ["e2", "e1", "e0"]);
   assert.deepEqual(log.query({ kind: "alert", visible: () => true }).map((e) => e.text), ["e3", "e1"]);
   assert.deepEqual(log.query({ before: all[1].id, limit: 2, visible: () => true }).map((e) => e.text), ["e2", "e1"]);
+});
+
+test("event log: kept in memory while the database is away, written when it's back", async () => {
+  const be = new MemoryBackend();
+  const log = new EventLog(be, 30);
+  await log.load();
+  const insert = be.insertEvents.bind(be);
+  be.insertEvents = async () => { throw new Error("down"); };
+  const orig = console.error;
+  console.error = () => {};
+  log.add({ kind: "down", text: "a" });
+  await new Promise((r) => setTimeout(r, 10));
+  console.error = orig;
+  assert.equal(be.events.length, 0);
+  assert.equal(log.pending.length, 1);
+  be.insertEvents = insert;
+  log.add({ kind: "online", text: "b" });
+  await log.stop();
+  assert.deepEqual(be.events.map((e) => e.text), ["a", "b"]);
 });
 
 // ---------------------------------------------------------------- the portal over HTTP
@@ -105,9 +126,9 @@ before(async () => {
   smtp = fakeSmtp();
   await new Promise((r) => smtp.listen(0, "127.0.0.1", r));
   const cfg = testConfig({ smtpHost: "127.0.0.1", smtpPort: smtp.address().port, smtpSecure: false, smtpFrom: "wd@test", sessionDays: 7 });
-  store = new Store(cfg.dataFile);
+  store = new Store();
   notifier = new Notifier(null, cfg, store, { batchMs: 0 });
-  events = new EventLog(path.join(path.dirname(cfg.dataFile), "events.jsonl"), 30);
+  events = new EventLog(new MemoryBackend(), 30);
   const notify = (text, important = false, meta = {}) =>
     events.add({ kind: meta.kind || "main", text, server: meta.server || null, important, muted: notifier.isMuted() });
   accounts = new Accounts(store, cfg, createMailer(cfg));
@@ -154,157 +175,158 @@ const owner = new Client(), alice = new Client(), bob = new Client();
 const ids = {};
 
 test("page + security headers; API needs a login; CSRF guards", async () => {
-  const page = await fetch(`${base}/portal/`);
+  const page = await fetch(`${base}/`);
+  assert.equal((await fetch(`${base}/portal/`)).status, 404); // gone: the home page is the login page
   assert.equal(page.status, 200);
   assert.match(page.headers.get("content-security-policy"), /frame-ancestors 'none'/);
   assert.equal(page.headers.get("x-frame-options"), "DENY");
-  assert.equal((await new Client().get("/portal/api/me")).status, 401);
-  assert.equal((await new Client().get("/portal/api/events")).status, 401);
-  assert.equal((await new Client().req("POST", "/portal/api/login", "username=a&password=b", { "Content-Type": "application/x-www-form-urlencoded" })).status, 415);
-  assert.equal((await new Client().req("POST", "/portal/api/login", { username: "a", password: "b" }, { Origin: "https://evil.example" })).status, 403);
-  const cfg = (await new Client().get("/portal/api/config")).json;
+  assert.equal((await new Client().get("/api/web/me")).status, 401);
+  assert.equal((await new Client().get("/api/web/events")).status, 401);
+  assert.equal((await new Client().req("POST", "/api/web/login", "username=a&password=b", { "Content-Type": "application/x-www-form-urlencoded" })).status, 415);
+  assert.equal((await new Client().req("POST", "/api/web/login", { username: "a", password: "b" }, { Origin: "https://evil.example" })).status, 403);
+  const cfg = (await new Client().get("/api/web/config")).json;
   assert.equal(cfg.bot_username, "test_bot");
   assert.equal(cfg.email_codes, true);
 });
 
 test("owner logs in with Telegram (ADMIN_IDS); strangers and a bad signature can't", async () => {
   const now = Math.floor(Date.now() / 1000);
-  assert.equal((await new Client().post("/portal/api/login/telegram", signTelegram({ id: 7, first_name: "X", auth_date: now }))).status, 403);
-  assert.equal((await new Client().post("/portal/api/login/telegram", { id: 42, auth_date: now, hash: "00" })).status, 401);
-  const r = await owner.post("/portal/api/login/telegram", signTelegram({ id: 42, first_name: "F", auth_date: now }));
+  assert.equal((await new Client().post("/api/web/login/telegram", signTelegram({ id: 7, first_name: "X", auth_date: now }))).status, 403);
+  assert.equal((await new Client().post("/api/web/login/telegram", { id: 42, auth_date: now, hash: "00" })).status, 401);
+  const r = await owner.post("/api/web/login/telegram", signTelegram({ id: 42, first_name: "F", auth_date: now }));
   assert.equal(r.status, 200);
   assert.match(r.res.headers.get("set-cookie"), /HttpOnly/i);
-  assert.equal((await owner.get("/portal/api/me")).json.me.role, "owner");
+  assert.equal((await owner.get("/api/web/me")).json.me.role, "owner");
 });
 
-test("one-time login link from the bot (/portal): works once, only for ADMIN_IDS", async () => {
+test("one-time login link from the bot (/login): works once, only for ADMIN_IDS", async () => {
   const token = accounts.loginLink(42);
   const c = new Client();
-  assert.equal((await c.post("/portal/api/login/link", { token })).status, 200);
-  assert.equal((await c.get("/portal/api/me")).json.me.role, "owner");
-  assert.equal((await new Client().post("/portal/api/login/link", { token })).status, 401); // used
-  assert.equal((await new Client().post("/portal/api/login/link", { token: accounts.loginLink(7) })).status, 401); // not an admin
+  assert.equal((await c.post("/api/web/login/link", { token })).status, 200);
+  assert.equal((await c.get("/api/web/me")).json.me.role, "owner");
+  assert.equal((await new Client().post("/api/web/login/link", { token })).status, 401); // used
+  assert.equal((await new Client().post("/api/web/login/link", { token: accounts.loginLink(7) })).status, 401); // not an admin
 });
 
 test("owner adds servers and creates staff + user accounts with invite links", async () => {
   for (const name of ["web-1", "db-1"]) {
-    const r = await owner.post("/portal/api/servers", { name });
+    const r = await owner.post("/api/web/servers", { name });
     assert.equal(r.status, 200);
     assert.match(r.json.token, /^wd_/);
     ids[name] = r.json.server.id;
     ids[`${name}:token`] = r.json.token;
   }
-  const a = await owner.post("/portal/api/accounts", { username: "Alice", role: "staff", servers: [ids["web-1"], "nonexistent"] });
+  const a = await owner.post("/api/web/accounts", { username: "Alice", role: "staff", servers: [ids["web-1"], "nonexistent"] });
   assert.equal(a.status, 200);
   assert.equal(a.json.account.username, "alice");
   assert.deepEqual(a.json.account.servers, [ids["web-1"]]); // unknown ids dropped
   ids.alice = a.json.account.id;
   ids.aliceInvite = /#invite=(.+)$/.exec(a.json.invite_url)[1];
-  const b = await owner.post("/portal/api/accounts", { username: "bob", role: "user", servers: [ids["db-1"]] });
+  const b = await owner.post("/api/web/accounts", { username: "bob", role: "user", servers: [ids["db-1"]] });
   ids.bob = b.json.account.id;
   ids.bobInvite = /#invite=(.+)$/.exec(b.json.invite_url)[1];
-  assert.equal((await owner.post("/portal/api/accounts", { username: "alice", role: "user" })).status, 400); // taken
-  assert.equal((await owner.post("/portal/api/accounts", { username: "x", role: "user" })).status, 400); // too short
-  assert.equal((await owner.post("/portal/api/accounts", { username: "carol", role: "god" })).status, 400);
+  assert.equal((await owner.post("/api/web/accounts", { username: "alice", role: "user" })).status, 400); // taken
+  assert.equal((await owner.post("/api/web/accounts", { username: "x", role: "user" })).status, 400); // too short
+  assert.equal((await owner.post("/api/web/accounts", { username: "carol", role: "god" })).status, 400);
   // invited accounts can't log in yet
-  assert.equal((await new Client().post("/portal/api/login", { username: "alice", password: "whatever-long" })).status, 401);
+  assert.equal((await new Client().post("/api/web/login", { username: "alice", password: "whatever-long" })).status, 401);
 });
 
 test("invite: authenticator app setup (password rules, wrong code, then done)", async () => {
   const inv = ids.aliceInvite;
-  assert.equal((await alice.get(`/portal/api/invite/${inv}`)).json.username, "alice");
-  assert.equal((await alice.get(`/portal/api/invite/not-a-real-token`)).status, 404);
-  const t = await alice.post(`/portal/api/invite/${inv}/totp`);
+  assert.equal((await alice.get(`/api/web/invite/${inv}`)).json.username, "alice");
+  assert.equal((await alice.get(`/api/web/invite/not-a-real-token`)).status, 404);
+  const t = await alice.post(`/api/web/invite/${inv}/totp`);
   assert.match(t.json.qr, /^<svg/);
   assert.match(t.json.url, /^otpauth:\/\/totp\/Watchdog:alice\?secret=/);
   ids.aliceSecret = t.json.secret;
-  assert.equal((await alice.post(`/portal/api/invite/${inv}/finish`, { password: "short", method: "totp", code: codeNow(t.json.secret) })).status, 400);
-  assert.equal((await alice.post(`/portal/api/invite/${inv}/finish`, { password: "alice-password-1", method: "totp", code: "000000" })).status, 400);
-  const ok = await alice.post(`/portal/api/invite/${inv}/finish`, { password: "alice-password-1", method: "totp", code: codeNow(t.json.secret) });
+  assert.equal((await alice.post(`/api/web/invite/${inv}/finish`, { password: "short", method: "totp", code: codeNow(t.json.secret) })).status, 400);
+  assert.equal((await alice.post(`/api/web/invite/${inv}/finish`, { password: "alice-password-1", method: "totp", code: "000000" })).status, 400);
+  const ok = await alice.post(`/api/web/invite/${inv}/finish`, { password: "alice-password-1", method: "totp", code: codeNow(t.json.secret) });
   assert.equal(ok.status, 200);
-  assert.equal((await alice.get("/portal/api/me")).json.me.role, "staff");
-  assert.equal((await new Client().get(`/portal/api/invite/${inv}`)).status, 404); // used up
+  assert.equal((await alice.get("/api/web/me")).json.me.role, "staff");
+  assert.equal((await new Client().get(`/api/web/invite/${inv}`)).status, 404); // used up
 });
 
 test("invite: e-mail code setup", async () => {
   const inv = ids.bobInvite;
-  assert.equal((await bob.post(`/portal/api/invite/${inv}/email`, { email: "not-an-email" })).status, 400);
-  assert.equal((await bob.post(`/portal/api/invite/${inv}/email`, { email: "bob@example.com" })).status, 200);
-  assert.equal((await bob.post(`/portal/api/invite/${inv}/email`, { email: "bob@example.com" })).status, 400); // wait a minute
+  assert.equal((await bob.post(`/api/web/invite/${inv}/email`, { email: "not-an-email" })).status, 400);
+  assert.equal((await bob.post(`/api/web/invite/${inv}/email`, { email: "bob@example.com" })).status, 200);
+  assert.equal((await bob.post(`/api/web/invite/${inv}/email`, { email: "bob@example.com" })).status, 400); // wait a minute
   const code = lastCode();
   assert.match(code, /^\d{6}$/);
-  assert.equal((await bob.post(`/portal/api/invite/${inv}/finish`, { password: "bob-password-12", method: "email", code: "111111" === code ? "222222" : "111111" })).status, 400);
-  assert.equal((await bob.post(`/portal/api/invite/${inv}/finish`, { password: "bob-password-12", method: "email", code })).status, 200);
-  assert.equal((await bob.get("/portal/api/me")).json.me.role, "user");
+  assert.equal((await bob.post(`/api/web/invite/${inv}/finish`, { password: "bob-password-12", method: "email", code: "111111" === code ? "222222" : "111111" })).status, 400);
+  assert.equal((await bob.post(`/api/web/invite/${inv}/finish`, { password: "bob-password-12", method: "email", code })).status, 200);
+  assert.equal((await bob.get("/api/web/me")).json.me.role, "user");
 });
 
 test("login: password + authenticator code (a code works once); password + e-mail code", async () => {
   const c = new Client();
-  assert.equal((await c.post("/portal/api/login", { username: "alice", password: "wrong-password" })).status, 401);
-  const step1 = await c.post("/portal/api/login", { username: "ALICE", password: "alice-password-1" });
+  assert.equal((await c.post("/api/web/login", { username: "alice", password: "wrong-password" })).status, 401);
+  const step1 = await c.post("/api/web/login", { username: "ALICE", password: "alice-password-1" });
   assert.equal(step1.status, 200);
   assert.equal(step1.json.method, "totp");
   assert.equal(c.cookie, ""); // no session before the second step
   const a = accounts.get(ids.alice);
-  assert.equal((await c.post("/portal/api/login/verify", { ticket: step1.json.ticket, code: totpCode(ids.aliceSecret, a.lastTotpStep) })).status, 401); // reused
-  assert.equal((await c.post("/portal/api/login/verify", { ticket: step1.json.ticket, code: codeNow(ids.aliceSecret, a.lastTotpStep) })).status, 200);
-  assert.equal((await c.get("/portal/api/me")).json.me.name, "alice");
+  assert.equal((await c.post("/api/web/login/verify", { ticket: step1.json.ticket, code: totpCode(ids.aliceSecret, a.lastTotpStep) })).status, 401); // reused
+  assert.equal((await c.post("/api/web/login/verify", { ticket: step1.json.ticket, code: codeNow(ids.aliceSecret, a.lastTotpStep) })).status, 200);
+  assert.equal((await c.get("/api/web/me")).json.me.name, "alice");
 
   const b = new Client();
-  const s1 = await b.post("/portal/api/login", { username: "bob", password: "bob-password-12" });
+  const s1 = await b.post("/api/web/login", { username: "bob", password: "bob-password-12" });
   assert.equal(s1.json.method, "email");
   assert.match(s1.json.email, /^bo.*@example\.com$/);
-  assert.equal((await b.post("/portal/api/login/verify", { ticket: s1.json.ticket, code: lastCode() })).status, 200);
+  assert.equal((await b.post("/api/web/login/verify", { ticket: s1.json.ticket, code: lastCode() })).status, 200);
 });
 
 test("too many wrong passwords: locked for a while", async () => {
   const c = new Client();
-  for (let i = 0; i < 10; i++) await c.req("POST", "/portal/api/login", { username: "lockme", password: `nope-${i}` }, { "X-Forwarded-For": "1.1.1.1" });
-  assert.equal((await c.post("/portal/api/login", { username: "lockme", password: "again" })).status, 429);
+  for (let i = 0; i < 10; i++) await c.req("POST", "/api/web/login", { username: "lockme", password: `nope-${i}` }, { "X-Forwarded-For": "1.1.1.1" });
+  assert.equal((await c.post("/api/web/login", { username: "lockme", password: "again" })).status, 429);
 });
 
 test("roles: who sees which servers and events; who may add, reboot, manage accounts", async () => {
   // reports make events: web-1 (alice's) and db-1 (bob's)
   await agentReport(ids["web-1:token"], { allow_reboot: true });
   await agentReport(ids["db-1:token"]);
-  const names = async (c) => (await c.get("/portal/api/overview")).json.servers.map((s) => s.name).sort();
+  const names = async (c) => (await c.get("/api/web/overview")).json.servers.map((s) => s.name).sort();
   assert.deepEqual(await names(owner), ["db-1", "web-1"]);
   assert.deepEqual(await names(alice), ["web-1"]);
   assert.deepEqual(await names(bob), ["db-1"]);
 
-  const evNames = async (c, q = "") => [...new Set((await c.get(`/portal/api/events${q}`)).json.events.map((e) => e.name || (e.kind === "audit" ? "audit" : "main")))].sort();
+  const evNames = async (c, q = "") => [...new Set((await c.get(`/api/web/events${q}`)).json.events.map((e) => e.name || (e.kind === "audit" ? "audit" : "main")))].sort();
   assert.deepEqual(await evNames(alice), ["web-1"]); // no audit, no main-server events, no db-1
   assert.deepEqual(await evNames(bob), ["db-1"]);
   assert.ok((await evNames(owner)).includes("audit"));
-  assert.equal((await alice.get(`/portal/api/events?server=${ids["db-1"]}`)).json.events.length, 0); // asking for it doesn't help
+  assert.equal((await alice.get(`/api/web/events?server=${ids["db-1"]}`)).json.events.length, 0); // asking for it doesn't help
 
-  assert.equal((await alice.get("/portal/api/accounts")).status, 403);
-  assert.equal((await bob.post("/portal/api/servers", { name: "bob-box" })).status, 403);
-  assert.equal((await bob.post(`/portal/api/servers/${ids["db-1"]}/reboot`)).status, 403);
+  assert.equal((await alice.get("/api/web/accounts")).status, 403);
+  assert.equal((await bob.post("/api/web/servers", { name: "bob-box" })).status, 403);
+  assert.equal((await bob.post(`/api/web/servers/${ids["db-1"]}/reboot`)).status, 403);
 
   // staff: a server they add is assigned to them
-  const added = await alice.post("/portal/api/servers", { name: "web-2" });
+  const added = await alice.post("/api/web/servers", { name: "web-2" });
   assert.equal(added.status, 200);
   assert.deepEqual(await names(alice), ["web-1", "web-2"]);
-  assert.equal((await alice.post(`/portal/api/servers/${ids["db-1"]}/reboot`)).status, 404); // not hers
-  assert.equal((await alice.post(`/portal/api/servers/${added.json.server.id}/reboot`)).status, 409); // offline
+  assert.equal((await alice.post(`/api/web/servers/${ids["db-1"]}/reboot`)).status, 404); // not hers
+  assert.equal((await alice.post(`/api/web/servers/${added.json.server.id}/reboot`)).status, 409); // offline
 });
 
 test("reboot: only when the sub server allows it; delivered once; logged", async () => {
   // db-1 didn't send allow_reboot
-  assert.equal((await owner.post(`/portal/api/servers/${ids["db-1"]}/reboot`)).status, 409);
-  const r = await alice.post(`/portal/api/servers/${ids["web-1"]}/reboot`);
+  assert.equal((await owner.post(`/api/web/servers/${ids["db-1"]}/reboot`)).status, 409);
+  const r = await alice.post(`/api/web/servers/${ids["web-1"]}/reboot`);
   assert.equal(r.status, 200);
   assert.equal(r.json.server.reboot_pending, true);
   assert.equal((await agentReport(ids["web-1:token"], { allow_reboot: true })).reboot, true);
   assert.equal((await agentReport(ids["web-1:token"], { allow_reboot: true })).reboot, undefined); // once
-  const ev = (await alice.get(`/portal/api/events?kind=reboot_request`)).json.events[0];
+  const ev = (await alice.get(`/api/web/events?kind=reboot_request`)).json.events[0];
   assert.match(ev.text, /reboot requested by alice/);
-  const audit = (await owner.get("/portal/api/events?kind=audit")).json.events.map((e) => e.text);
+  const audit = (await owner.get("/api/web/events?kind=audit")).json.events.map((e) => e.text);
   assert.ok(audit.some((t) => /alice rebooted web-1/.test(t)));
   assert.ok(audit.some((t) => /alice added server web-2/.test(t)));
   // not picked up in time: dropped
-  await alice.post(`/portal/api/servers/${ids["web-1"]}/reboot`);
+  await alice.post(`/api/web/servers/${ids["web-1"]}/reboot`);
   mon.get(ids["web-1"]).pendingReboot.expires = Date.now() / 1000 - 1;
   assert.equal((await agentReport(ids["web-1:token"], { allow_reboot: true })).reboot, undefined);
 });
@@ -312,7 +334,7 @@ test("reboot: only when the sub server allows it; delivered once; logged", async
 test("live: each viewer gets only their servers' events", async () => {
   const open = (c) =>
     new Promise((resolve, reject) => {
-      const ws = new WebSocket(`${base.replace("http", "ws")}/ws/portal`, { headers: { Cookie: c.cookie } });
+      const ws = new WebSocket(`${base.replace("http", "ws")}/ws/web`, { headers: { Cookie: c.cookie } });
       const got = [];
       ws.on("message", (m) => got.push(JSON.parse(m)));
       ws.on("open", () => resolve({ ws, got }));
@@ -320,7 +342,7 @@ test("live: each viewer gets only their servers' events", async () => {
     });
   const a = await open(alice), b = await open(bob);
   const rejected = await new Promise((r) => {
-    const ws = new WebSocket(`${base.replace("http", "ws")}/ws/portal`);
+    const ws = new WebSocket(`${base.replace("http", "ws")}/ws/web`);
     ws.on("error", () => r(true));
     ws.on("open", () => r(false));
   });
@@ -338,29 +360,29 @@ test("muted notifications are still logged, marked muted", async () => {
   notifier.mute(10);
   await agentReport(ids["web-1:token"], { allow_reboot: true }); // back online
   notifier.unmute();
-  const e = (await owner.get(`/portal/api/events?server=${ids["web-1"]}&kind=online`)).json.events[0];
+  const e = (await owner.get(`/api/web/events?server=${ids["web-1"]}&kind=online`)).json.events[0];
   assert.equal(e.muted, true);
 });
 
 test("owner: reassign, disable, reset, delete; can't lock themselves out; logins end at once", async () => {
-  assert.equal((await owner.req("PATCH", `/portal/api/accounts/${ids.bob}`, { servers: [ids["web-1"]] })).status, 200);
-  assert.deepEqual((await bob.get("/portal/api/overview")).json.servers.map((s) => s.name), ["web-1"]);
-  assert.equal((await owner.req("PATCH", `/portal/api/accounts/${ids.bob}`, { disabled: true })).status, 200);
-  assert.equal((await bob.get("/portal/api/me")).status, 401);
-  const reset = await owner.post(`/portal/api/accounts/${ids.alice}/reset`);
+  assert.equal((await owner.req("PATCH", `/api/web/accounts/${ids.bob}`, { servers: [ids["web-1"]] })).status, 200);
+  assert.deepEqual((await bob.get("/api/web/overview")).json.servers.map((s) => s.name), ["web-1"]);
+  assert.equal((await owner.req("PATCH", `/api/web/accounts/${ids.bob}`, { disabled: true })).status, 200);
+  assert.equal((await bob.get("/api/web/me")).status, 401);
+  const reset = await owner.post(`/api/web/accounts/${ids.alice}/reset`);
   assert.match(reset.json.invite_url, /#invite=/);
-  assert.equal((await alice.get("/portal/api/me")).status, 401);
-  assert.equal((await new Client().post("/portal/api/login", { username: "alice", password: "alice-password-1" })).status, 401);
-  assert.equal((await owner.req("DELETE", `/portal/api/accounts/${ids.bob}`, {})).status, 200);
-  assert.equal((await owner.get("/portal/api/accounts")).json.accounts.some((a) => a.id === ids.bob), false);
+  assert.equal((await alice.get("/api/web/me")).status, 401);
+  assert.equal((await new Client().post("/api/web/login", { username: "alice", password: "alice-password-1" })).status, 401);
+  assert.equal((await owner.req("DELETE", `/api/web/accounts/${ids.bob}`, {})).status, 200);
+  assert.equal((await owner.get("/api/web/accounts")).json.accounts.some((a) => a.id === ids.bob), false);
   // an owner account can't demote/disable/delete itself
-  const o = await owner.post("/portal/api/accounts", { username: "owner2", role: "owner" });
+  const o = await owner.post("/api/web/accounts", { username: "owner2", role: "owner" });
   const own = new Client();
   const inv = /#invite=(.+)$/.exec(o.json.invite_url)[1];
-  const t = await own.post(`/portal/api/invite/${inv}/totp`);
-  await own.post(`/portal/api/invite/${inv}/finish`, { password: "owner2-password", method: "totp", code: codeNow(t.json.secret) });
+  const t = await own.post(`/api/web/invite/${inv}/totp`);
+  await own.post(`/api/web/invite/${inv}/finish`, { password: "owner2-password", method: "totp", code: codeNow(t.json.secret) });
   for (const [m, p, b] of [["PATCH", "", { role: "user" }], ["PATCH", "", { disabled: true }], ["DELETE", "", {}], ["POST", "/reset", {}]]) {
-    assert.equal((await own.req(m, `/portal/api/accounts/${o.json.account.id}${p}`, b)).status, 400);
+    assert.equal((await own.req(m, `/api/web/accounts/${o.json.account.id}${p}`, b)).status, 400);
   }
   // a removed server disappears from every assignment
   mon.removeServer(ids["web-1"]);

@@ -5,6 +5,7 @@ import { validateInitData } from "../src/telegramAuth.js";
 import { sanitizeReport, sanitizeVersion } from "../src/sanitize.js";
 import { splitMessage, esc, fmtDuration } from "../src/format.js";
 import { Store } from "../src/store.js";
+import { MemoryBackend } from "../src/db.js";
 import { buildNginx, injectBlock, findConflicts } from "../scripts/nginx.js";
 import { BOT_TOKEN, initData, tmpFile } from "./helpers.js";
 
@@ -78,35 +79,53 @@ test("esc and fmtDuration", () => {
 });
 
 // ------------------------------------------------------------------ store
-test("store: prototype-like ids are plain keys; corrupt file is set aside", () => {
-  const file = tmpFile();
-  const st = new Store(file);
+test("store: writes only what changed; prototype-like ids are plain keys; reload gets it back", async () => {
+  const be = new MemoryBackend();
+  const writes = [];
+  const write = be.write.bind(be);
+  be.write = async (c) => (writes.push(c), write(c));
+  const st = await Store.open(be);
   st.servers.__proto__ = { id: "__proto__" };
   st.servers.constructor = { id: "constructor" };
-  st.flush();
-  const again = new Store(file);
-  assert.deepEqual(Object.keys(again.servers).sort(), ["__proto__", "constructor"]);
+  st.setKv("a", 1);
+  assert.equal(await st.flush(), true);
+  assert.deepEqual(Object.keys(writes[0]).sort(), ["kv", "servers"]);
+  assert.equal(await st.flush(), true);
+  assert.equal(writes.length, 1); // nothing changed: nothing written
+  st.servers.constructor.name = "x";
+  delete st.servers.__proto__;
+  await st.flush();
+  assert.deepEqual(writes[1].servers.upsert.map((u) => u[0]), ["constructor"]);
+  assert.deepEqual(writes[1].servers.remove, ["__proto__"]);
+  clearTimeout(st.timer);
+  const again = await Store.open(be);
+  assert.deepEqual(Object.keys(again.servers), ["constructor"]);
+  assert.equal(again.servers.constructor.name, "x");
+  assert.equal(again.getKv("a"), 1);
   assert.equal(again.getKv("toString"), null);
-
-  fs.writeFileSync(file, "{not json");
-  const recovered = new Store(file);
-  assert.deepEqual(Object.keys(recovered.servers), []);
-  assert.ok(fs.readdirSync(file.replace(/[^/]+$/, "")).some((f) => f.includes(".corrupt-")));
 });
-test("store: a failed write is logged, not thrown", () => {
-  const st = new Store(tmpFile());
-  st.file = "/proc/definitely/not/writable.json";
+test("store: a failed write is logged, not thrown, and tried again", async () => {
+  const be = new MemoryBackend();
+  const st = await Store.open(be);
+  st.setKv("k", "v");
+  be.fail = "connection refused";
   const orig = console.error;
   console.error = () => {};
   try {
-    assert.equal(st.flush(), false);
+    assert.equal(await st.flush(), false);
+    assert.equal(st.dbOk, false);
+    assert.ok(st.timer); // retry scheduled
+    be.fail = null;
+    assert.equal(await st.flush(), true);
+    assert.equal(st.dbOk, true);
+    assert.equal((await be.loadAll()).kv.k, "v");
   } finally {
     console.error = orig;
     clearTimeout(st.timer);
   }
 });
 test("store: an earlier deadline wins over a later one", () => {
-  const st = new Store(tmpFile());
+  const st = new Store();
   st.save(60_000);
   const late = st.dueAt;
   st.save(1000);

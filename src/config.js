@@ -15,7 +15,7 @@ let fromFile = dotenv.config({ path: ENV_FILE, quiet: true }).parsed || {};
 /** .env names of the config keys, for messages (`recipients` is derived, not a setting). */
 export const ENV_NAMES = {
   botToken: "BOT_TOKEN", adminIds: "ADMIN_IDS", alertChatIds: "ALERT_CHAT_IDS", webappUrl: "WEBAPP_URL",
-  publicUrl: "PUBLIC_URL", host: "HOST", port: "PORT", dataFile: "DATA_FILE", timezone: "TIMEZONE",
+  publicUrl: "PUBLIC_URL", host: "HOST", port: "PORT", dataFile: "DATA_FILE", databaseUrl: "DATABASE_URL", timezone: "TIMEZONE",
   offlineAfter: "OFFLINE_AFTER_SECONDS", historyMinutes: "HISTORY_MINUTES", reportIntervalMinutes: "HEALTH_REPORT_INTERVAL_MINUTES",
   cpuAlert: "CPU_ALERT_PERCENT", cpuAlertFor: "CPU_ALERT_FOR_SECONDS", ramAlert: "RAM_ALERT_PERCENT", ramAlertFor: "RAM_ALERT_FOR_SECONDS",
   diskAlert: "DISK_ALERT_PERCENT", diskAlertFor: "DISK_ALERT_FOR_SECONDS", tempAlert: "TEMP_ALERT_CELSIUS", tempAlertFor: "TEMP_ALERT_FOR_SECONDS",
@@ -25,7 +25,7 @@ export const ENV_NAMES = {
   notifyHistoryDays: "NOTIFY_HISTORY_DAYS", sessionDays: "PORTAL_SESSION_DAYS", smtpHost: "SMTP_HOST", smtpPort: "SMTP_PORT",
   smtpUser: "SMTP_USER", smtpPass: "SMTP_PASS", smtpFrom: "SMTP_FROM", smtpSecure: "SMTP_SECURE",
 };
-export const RESTART_KEYS = ["botToken", "host", "port", "dataFile", "devNoAuth", "webappUrl", "autoUpdate", "updateCheckMinutes", "updateBranch", "githubToken", "notifyHistoryDays"];
+export const RESTART_KEYS = ["botToken", "host", "port", "dataFile", "databaseUrl", "devNoAuth", "webappUrl", "autoUpdate", "updateCheckMinutes", "updateBranch", "githubToken", "notifyHistoryDays"];
 
 const str = (name, def = "") => (process.env[name] ?? def).toString().trim();
 const num = (name, def) => {
@@ -80,6 +80,9 @@ export function readConfig({ reload = false } = {}) {
     host: str("HOST", "127.0.0.1"),
     port: num("PORT", 8080),
     // relative paths are relative to the main-server folder, wherever it is started from
+    // PostgreSQL holds everything (servers, tokens, accounts, notification history, settings)
+    databaseUrl: str("DATABASE_URL"),
+    // only read once: data of the file-based versions, imported into an empty database
     dataFile: path.resolve(APP_DIR, str("DATA_FILE", "data/watchdog.json")),
     timezone: str("TIMEZONE"), // e.g. America/Toronto; empty = the machine's time zone
 
@@ -128,6 +131,11 @@ export function readConfig({ reload = false } = {}) {
   const problems = [];
   if (!Number.isInteger(cfg.port) || cfg.port < 1 || cfg.port > 65535) problems.push(`PORT must be 1-65535 (got ${cfg.port})`);
   if (!cfg.botToken) problems.push("BOT_TOKEN is not set (get one from @BotFather)");
+  if (!cfg.databaseUrl) {
+    problems.push("DATABASE_URL is not set: create a PostgreSQL database (aaPanel → Databases → PgSQL) and add e.g. DATABASE_URL=postgres://watchdog:PASSWORD@127.0.0.1:5432/watchdog");
+  } else if (!/^postgres(ql)?:\/\//i.test(cfg.databaseUrl)) {
+    problems.push("DATABASE_URL must start with postgres:// (postgres://USER:PASSWORD@HOST:5432/DATABASE)");
+  }
   if (!cfg.adminIds.length) problems.push("ADMIN_IDS is empty (send /start to your bot to see your Telegram ID)");
   if (!(cfg.offlineAfter >= 10)) problems.push(`OFFLINE_AFTER_SECONDS must be at least 10 (got ${cfg.offlineAfter})`);
   if (!(cfg.historyMinutes >= 1 && cfg.historyMinutes <= 1440)) problems.push("HISTORY_MINUTES must be between 1 and 1440");

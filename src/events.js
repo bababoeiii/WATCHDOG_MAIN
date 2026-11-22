@@ -1,7 +1,6 @@
 // Event log for the web portal: every notification (also while muted) plus who-did-what entries.
-// Kept in memory and appended to data/events.jsonl; entries older than the retention are dropped.
-import fs from "node:fs";
-
+// Stored in PostgreSQL (wd_events); the last NOTIFY_HISTORY_DAYS are also kept in memory for fast
+// filtering per viewer. Older entries are deleted.
 const MAX_EVENTS = 50_000; // safety cap, whatever the retention
 const TEXT_LIMIT = 2000;
 
@@ -25,53 +24,55 @@ export const KINDS = {
 
 export class EventLog {
   /**
-   * @param file           path of the .jsonl file
+   * @param backend        PgBackend / MemoryBackend (db.js)
    * @param retentionDays  NOTIFY_HISTORY_DAYS
    */
-  constructor(file, retentionDays = 30) {
-    this.file = file;
+  constructor(backend, retentionDays = 30) {
+    this.backend = backend;
     this.retentionDays = retentionDays;
     this.events = []; // oldest first
     this.nextId = 1;
     this.listeners = new Set();
-    this.load();
+    this.pending = []; // not yet written (database unreachable)
   }
 
   cutoff() {
     return Date.now() / 1000 - this.retentionDays * 86400;
   }
 
-  load() {
-    if (!fs.existsSync(this.file)) return;
-    const keep = [];
-    for (const line of fs.readFileSync(this.file, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const e = JSON.parse(line);
-        if (e && typeof e.id === "number" && typeof e.ts === "number") keep.push(e);
-      } catch {
-        /* a half-written last line after a crash: skip it */
-      }
-    }
-    this.events = keep;
-    this.nextId = keep.length ? keep[keep.length - 1].id + 1 : 1;
-    this.prune(true);
+  /** Load the recent history from the database (call once at start). */
+  async load() {
+    this.nextId = (await this.backend.maxEventId()) + 1; // before pruning: ids never go back
+    await this.backend.pruneEvents(this.cutoff());
+    this.events = await this.backend.loadEvents(this.cutoff(), MAX_EVENTS);
   }
 
-  /** Drop old entries; rewrite the file when anything was dropped (or `force`). */
-  prune(force = false) {
+  /** Drop entries older than the retention, in memory and in the database. */
+  async prune() {
     const cut = this.cutoff();
     let drop = 0;
     while (drop < this.events.length && this.events[drop].ts < cut) drop++;
     if (this.events.length - drop > MAX_EVENTS) drop = this.events.length - MAX_EVENTS;
     if (drop) this.events.splice(0, drop);
-    if (!drop && !force) return;
     try {
-      const tmp = `${this.file}.tmp`;
-      fs.writeFileSync(tmp, this.events.map((e) => JSON.stringify(e)).join("\n") + (this.events.length ? "\n" : ""), { mode: 0o600 });
-      fs.renameSync(tmp, this.file);
+      await this.backend.pruneEvents(cut);
     } catch (e) {
-      console.error(`Could not rewrite ${this.file}: ${e.message}`);
+      console.error(`Could not prune old notifications: ${e.message}`);
+    }
+  }
+
+  /** Write what's waiting; on failure it stays queued and goes out with the next event or prune. */
+  async persist() {
+    if (this.persisting || !this.pending.length) return;
+    this.persisting = true;
+    const batch = this.pending.splice(0);
+    try {
+      await this.backend.insertEvents(batch);
+    } catch (e) {
+      this.pending.unshift(...batch.slice(-5000)); // keep the newest if the database stays away
+      console.error(`Could not save notifications to the database: ${e.message}`);
+    } finally {
+      this.persisting = false;
     }
   }
 
@@ -97,12 +98,9 @@ export class EventLog {
       ...(actor ? { actor: String(actor).slice(0, 80) } : {}),
     };
     this.events.push(e);
-    try {
-      fs.appendFileSync(this.file, JSON.stringify(e) + "\n", { mode: 0o600 });
-    } catch (err) {
-      console.error(`Could not write ${this.file}: ${err.message}`);
-    }
-    if (this.events.length > MAX_EVENTS) this.prune();
+    if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS);
+    this.pending.push(e);
+    this.persist();
     for (const fn of this.listeners) {
       try {
         fn(e);
@@ -137,11 +135,17 @@ export class EventLog {
   }
 
   start() {
-    this.timer = setInterval(() => this.prune(), 3600_000);
+    this.timer = setInterval(() => {
+      this.prune();
+      this.persist();
+    }, 3600_000);
     this.timer.unref?.();
   }
 
-  stop() {
+  /** Stop the timer and write what's still waiting. */
+  async stop() {
     clearInterval(this.timer);
+    while (this.persisting) await new Promise((r) => setTimeout(r, 20));
+    await this.persist();
   }
 }

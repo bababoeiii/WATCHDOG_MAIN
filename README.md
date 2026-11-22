@@ -67,6 +67,10 @@ Telegram / sub servers ──HTTPS 443──▶ aaPanel nginx (domain + Let's En
 
 **Step 1: in aaPanel (once)**
 
+0. **App Store → PostgreSQL** is installed, then **Databases → PgSQL → Add database** (e.g. name and user
+   `watchdog`, a strong password). The installer asks for it as
+   `postgres://watchdog:PASSWORD@127.0.0.1:5432/watchdog` (or pass `--database-url …`). Everything is
+   stored there; an older install's `data/watchdog.json` is imported on the first start.
 1. **App Store → Nginx** is installed. For **Node.js 18+**, use *App Store → Node.js version manager* (pick v20),
    or any system Node. The installer finds both.
 2. **Website → Add site**: your domain, e.g. `watchdog.example.com` (PHP: *static*, no database).
@@ -165,10 +169,18 @@ Safety rules:
   tells you.
 - Set `AUTO_UPDATE=false` to update only when you say so (`/update`).
 
-## Web portal (`/portal/`)
+## Website (the home page)
 
-`https://YOUR-DOMAIN/portal/` in any browser: the notification history (also what came in while muted),
-live, with a "now" overview of what is down; who may see what depends on the account.
+`https://YOUR-DOMAIN/` in any browser opens the login page. After logging in:
+
+- **Servers** — like the Telegram dashboard: a card per server with CPU, RAM, disk, temperature, network,
+  load, uptime and alerts, live; click one for the last hour as charts (CPU, RAM, temperature, network),
+  every core, every disk, the top processes and the sensors.
+- **Notifications** — what is down right now, and the notification history (also what came in while
+  muted), live, filterable by server and type.
+- **Accounts** and **Activity** — owners only.
+
+Who may see what depends on the account:
 
 | | sees | add servers, reboot | accounts, activity log |
 |---|---|---|---|
@@ -176,7 +188,7 @@ live, with a "now" overview of what is down; who may see what depends on the acc
 | **Staff** | the servers assigned to them | ✔ (a server they add is assigned to them; reboot only their servers) | ✖ |
 | **User** | the servers assigned to them | ✖ | ✖ |
 
-- **First login (owners):** send `/portal` to the bot: it answers with a one-time link (10 minutes).
+- **First login (owners):** send `/login` to the bot: it answers with a one-time link (10 minutes).
   `ADMIN_IDS` are always owners. Optional: send `/setdomain` to @BotFather with your domain, and the
   login page also gets a "Log in with Telegram" button.
 - **Accounts:** an owner creates them under *Accounts* (username, role, servers) and sends the invite
@@ -200,7 +212,7 @@ The installer adds `watchdog-main` (a link to `control.sh`):
 |---|---|
 | `watchdog-main start` | start the service and wait until it answers |
 | `watchdog-main restart` | restart it |
-| `watchdog-main reload` | re-read `.env` **without a restart**. Alert thresholds, `ALERT_CHAT_IDS`, `ADMIN_IDS`, `TIMEZONE`, `SUB_REPO`, intervals … apply at once; `BOT_TOKEN`, `PORT`, `HOST`, `WEBAPP_URL`, `DATA_FILE` and the auto-update settings are listed as "needs a restart". A broken `.env` is refused and nothing changes |
+| `watchdog-main reload` | re-read `.env` **without a restart**. Alert thresholds, `ALERT_CHAT_IDS`, `ADMIN_IDS`, `TIMEZONE`, `SUB_REPO`, intervals … apply at once; `BOT_TOKEN`, `PORT`, `HOST`, `WEBAPP_URL`, `DATABASE_URL` and the auto-update settings are listed as "needs a restart". A broken `.env` is refused and nothing changes |
 | `watchdog-main test` | self-check: `.env`, bot token, admins, notification groups (is the bot in them?), local port, public HTTPS, dashboard, data file, both GitHub repos. Exit code 1 if something failed |
 | `watchdog-main health` | service state (uptime, memory, restarts), errors of the last 24 h, connectivity (local, public, Telegram), sub servers online/offline, version vs. GitHub |
 
@@ -221,7 +233,7 @@ install or update; `/start` brings it back): **📊 Status · ⚠️ Alerts · �
 | `/version` | versions vs. each project's GitHub repo |
 | `/update all \| subs \| main \| <name>` | update now (`all` = both sides, `subs` = all sub servers; one summary) |
 | `/dashboard` | open the live dashboard |
-| `/portal` | one-time login link for the web portal (owners) |
+| `/login` | one-time login link for the website (owners) |
 | `/mute 60` · `/unmute` | silence notifications |
 
 Only users in `ADMIN_IDS` can use the bot and dashboard. Tokens are only sent in private chats.
@@ -242,8 +254,9 @@ Only users in `ADMIN_IDS` can use the bot and dashboard. Tokens are only sent in
 | `TEMP_ALERT_CELSIUS` / `_FOR_SECONDS` | 80 / 60 | hottest sensor |
 | `ALERT_HYSTERESIS` | 5 | how far below the limit before "resolved" |
 | `AUTO_UPDATE` · `UPDATE_CHECK_MINUTES` · `UPDATE_BRANCH` · `UPDATE_GITHUB_TOKEN` | true · 30 · checked-out branch · — | |
-| `NOTIFY_HISTORY_DAYS` · `PORTAL_SESSION_DAYS` | 30 · 7 | web portal: notification history kept, how long a login lasts |
-| `SMTP_HOST` · `SMTP_PORT` · `SMTP_USER` · `SMTP_PASS` · `SMTP_FROM` · `SMTP_SECURE` | — · 587 · — · — · `SMTP_USER` · auto | e-mail login codes for the portal; empty `SMTP_HOST` = authenticator app only |
+| `DATABASE_URL` | — (required) | PostgreSQL: `postgres://USER:PASSWORD@127.0.0.1:5432/DATABASE`. All data lives there |
+| `NOTIFY_HISTORY_DAYS` · `PORTAL_SESSION_DAYS` | 30 · 7 | website: notification history kept, how long a login lasts |
+| `SMTP_HOST` · `SMTP_PORT` · `SMTP_USER` · `SMTP_PASS` · `SMTP_FROM` · `SMTP_SECURE` | — · 587 · — · — · `SMTP_USER` · auto | e-mail login codes for the website; empty `SMTP_HOST` = authenticator app only |
 | `TIMEZONE` | server's own | time zone for times in Telegram messages, e.g. `America/Toronto` |
 | `PORT` | 8080 | local port of the Node app; aaPanel/nginx proxies to it (`npm run setup` picks a free one) |
 | `HOST` | 127.0.0.1 | `127.0.0.1` = only via aaPanel/nginx; `0.0.0.0` = reachable directly |
@@ -253,7 +266,9 @@ Only users in `ADMIN_IDS` can use the bot and dashboard. Tokens are only sent in
 
 ```bash
 npm test     # login check, report sanitising, tokens, alerts, down detection,
-             # notification batching/splitting, nginx block, HTTP + WebSocket API
+             # notification batching/splitting, nginx block, HTTP + WebSocket API, website
+TEST_DATABASE_URL=postgres://watchdog:PASSWORD@127.0.0.1:5432/watchdog_test npm test
+             # + the PostgreSQL tests (use a separate database: its wd_* tables are emptied)
 ```
 
 ## Security
@@ -269,8 +284,8 @@ npm test     # login check, report sanitising, tokens, alerts, down detection,
 
 ```
 src/        index, server, monitor, bot, notifier, telegramAuth, store, format, config, updater,
-            portal (web portal API), accounts (logins, 2FA), events (notification log), mailer
-public/     index.html (Telegram dashboard), portal.html (web portal)
+            portal (website API), accounts (logins, 2FA), events (notification log), mailer, db (PostgreSQL)
+public/     index.html (Telegram dashboard, /app/), portal.html (website, /)
 scripts/    setup.js (npm run setup) · nginx.js (npm run nginx [--apply|--remove] → aaPanel site config)
 control.sh  watchdog-main start|restart|reload|test|health · scripts/check.js (the self-check)
 install.sh  aaPanel install · Dockerfile · docker-compose.yml · watchdog-main.service · .env.example

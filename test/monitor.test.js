@@ -7,7 +7,7 @@ import { fakeClock, report, testConfig } from "./helpers.js";
 let clock, msgs, mon, store;
 const setup = (cfgOver = {}) => {
   const cfg = testConfig(cfgOver);
-  store = new Store(cfg.dataFile);
+  store = new Store();
   msgs = [];
   // like index.js: telegram: false = only logged for the portal, not sent
   mon = new Monitor(cfg, store, (t, important, meta = {}) => meta.telegram !== false && msgs.push({ t: t.split("\n")[0], important, meta }), () => {});

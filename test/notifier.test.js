@@ -14,7 +14,7 @@ const quiet = async (fn) => {
     console.warn = w;
   }
 };
-const make = (api, over = {}) => new Notifier(api, testConfig({ recipients: [42], ...over }), new Store(testConfig().dataFile), { batchMs: 20 });
+const make = (api, over = {}) => new Notifier(api, testConfig({ recipients: [42], ...over }), new Store(), { batchMs: 20 });
 
 test("a burst of events becomes one message; important if any event was", () =>
   quiet(async () => {
