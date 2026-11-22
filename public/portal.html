@@ -140,6 +140,10 @@ canvas.chart { width: 100%; height: 130px; display: block; touch-action: pan-y; 
 .core > b { position: absolute; left: 0; right: 0; bottom: 0; background: var(--series-1); border-radius: 4px 4px 0 0; transition: height .4s ease; }
 .core > span { position: absolute; inset: 0; display: flex; align-items: flex-start; justify-content: center; padding-top: 3px; font-size: 10.5px; font-weight: 600; }
 td.r, th.r { text-align: right; } td .bar { margin-top: 4px; }
+.people { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.person { display: inline-flex; align-items: center; gap: 6px; background: var(--page); border: 1px solid var(--line); border-radius: 99px; padding: 4px 6px 4px 12px; font-size: 14px; }
+.person button { border: 0; background: var(--soft); border-radius: 50%; width: 22px; height: 22px; cursor: pointer; line-height: 1; color: var(--muted); }
+.person button:hover { color: var(--critical); }
 .tip { position: fixed; pointer-events: none; z-index: 10; background: var(--text); color: var(--card); font-size: 12px; padding: 6px 8px; border-radius: 8px; white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,.18); }
 @media (max-width: 700px) { .charts { grid-template-columns: 1fr; } }
 @media (max-width: 460px) { .tiles { grid-template-columns: repeat(2, 1fr); } .grid { grid-template-columns: 1fr; } }
@@ -205,7 +209,7 @@ const ICON = { down: "🔴", offline: "⏹", online: "🟢", connected: "🆕", 
 const S = {
   config: null, me: null, view: "events",
   servers: new Map(), kinds: {}, mutedUntil: null, retention: 30,
-  thresholds: {}, historyMinutes: 60, detail: null, history: new Map(), hover: null,
+  thresholds: {}, historyMinutes: 60, detail: null, history: new Map(), hover: null, access: null,
   events: [], filter: { server: "", kind: "" }, more: true, loading: false,
   accounts: null, accountServers: [], telegramOwners: [], editing: null, created: null,
   added: null, conn: "",
@@ -598,6 +602,7 @@ function renderServerDetail() {
     <div class="facts"><span>${esc(m.os || "")} ${esc(m.arch || "")}</span>${online ? `<span>Up ${fmtDur(m.uptime)}</span>` : ""}
       <span class="num">Updated ${s.last_seen ? fmtDur(nowS() - s.last_seen) + " ago" : "never"}</span>${s.version ? `<span class="num">v ${esc(s.version)}</span>` : ""}</div>
     ${reboot ? `<div class="row" style="margin-top:10px">${reboot}</div>` : ""}</div>`;
+  if (S.me.is_owner) html += renderAccess(s);
   if (!s.metrics) return html + `<div class="card muted">No report from this server yet.</div>`;
   if ((s.alerts || []).length) {
     html += `<div class="card">${s.alerts.map((a) => `<div class="chip" style="display:inline-block;margin:2px 4px 2px 0">⚠ ${esc(a.label)}${a.detail ? " · " + esc(a.detail) : ""} — ${Math.round(a.value)}${esc(a.unit || "")} · for ${fmtDur(nowS() - a.since)}</div>`).join("")}</div>`;
@@ -629,10 +634,31 @@ function renderServerDetail() {
   return html;
 }
 
+/** Owners: which staff / user accounts can see this server (owners see all). */
+function renderAccess(s) {
+  const A = S.access && S.access.server === s.id ? S.access : null;
+  if (!A) return `<div class="card"><h2>Who can see this server</h2><p class="small muted">Loading…</p></div>`;
+  const tag = (a) => `${a.disabled ? " · disabled" : a.invited ? " · invite open" : ""}`;
+  return `<div class="card"><h2>Who can see this server</h2>
+    <p class="small muted" style="margin:0 0 8px">Owners see every server. Staff can also reboot it.</p>
+    <div class="people">${A.assigned.length ? A.assigned.map((a) => `<span class="person">${esc(a.username)} <span class="small muted">${ROLE[a.role]}${tag(a)}</span>
+      <button type="button" data-unassign="${esc(a.id)}" title="Remove ${esc(a.username)}" aria-label="Remove ${esc(a.username)}">✕</button></span>`).join("")
+      : `<span class="small muted">Nobody yet — only owners see it.</span>`}</div>
+    ${A.candidates.length ? `<form id="f-access" class="row"><select name="account" required><option value="">+ Choose an account…</option>
+      ${A.candidates.map((a) => `<option value="${esc(a.id)}">${esc(a.username)} (${ROLE[a.role]}${tag(a)})</option>`).join("")}</select>
+      <button class="btn">Add</button></form>`
+      : `<p class="small muted" style="margin:0">${A.assigned.length ? "Every staff and user account can see it." : "No staff or user accounts yet — create them under Accounts."}</p>`}</div>`;
+}
+async function loadAccess(id) {
+  try { S.access = { server: id, ...(await api(`/servers/${encodeURIComponent(id)}/access`)) }; }
+  catch (e) { toast(e.message); }
+}
+
 async function openServer(id) {
-  S.detail = id; S.hover = null;
+  S.detail = id; S.hover = null; S.access = null;
   render();
   window.scrollTo(0, 0);
+  if (S.me.is_owner) loadAccess(id).then(render);
   try { const r = await api(`/servers/${encodeURIComponent(id)}/history`); S.history.set(id, r.history); }
   catch (e) { toast(e.message); }
   render();
@@ -786,7 +812,19 @@ function renderEdit(a) {
 
 // ---------------------------------------------------------------- render + events
 let renderPending = false;
-function renderLater() { if (!renderPending) { renderPending = true; requestAnimationFrame(() => { renderPending = false; render(); }); } }
+function renderLater() {
+  if (renderPending) return;
+  // A re-render would close a dropdown that is open (live data arrives every few seconds):
+  // wait until the user is done with it.
+  const a = document.activeElement;
+  if (a && a.tagName === "SELECT") {
+    renderPending = true;
+    a.addEventListener("blur", () => { renderPending = false; renderLater(); }, { once: true });
+    return;
+  }
+  renderPending = true;
+  requestAnimationFrame(() => { renderPending = false; render(); });
+}
 function render() {
   const root = $("#root");
   // keep what the user is typing in forms that a live update re-renders
@@ -840,6 +878,19 @@ function bindApp() {
     render();
   };
   document.querySelectorAll("[data-server]").forEach((c) => (c.onclick = () => openServer(c.dataset.server)));
+  const fa = $("#f-access");
+  if (fa) fa.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!fa.account.value) return;
+    try { S.access = { server: S.detail, ...(await api(`/servers/${encodeURIComponent(S.detail)}/access`, { method: "POST", body: { account_id: fa.account.value } })) }; }
+    catch (err) { toast(err.message); }
+    render();
+  };
+  document.querySelectorAll("[data-unassign]").forEach((b) => (b.onclick = async () => {
+    try { S.access = { server: S.detail, ...(await api(`/servers/${encodeURIComponent(S.detail)}/access/${encodeURIComponent(b.dataset.unassign)}`, { method: "DELETE", body: {} })) }; }
+    catch (err) { toast(err.message); }
+    render();
+  }));
   const back = $("[data-back]");
   if (back) back.onclick = () => { S.detail = null; S.hover = null; $("#tip").hidden = true; render(); };
   const ad = $("#added-done");

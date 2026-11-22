@@ -251,6 +251,45 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     res.json({ ok: true, server: serverView(s) });
   }));
 
+  // ---------------------------------------------------------------- who can see a server (owners)
+  // Owners see every server anyway; this is about staff and user accounts.
+  const accessView = (s) => {
+    const people = accounts.all().filter((a) => a.role !== "owner");
+    const row = (a) => ({ id: a.id, username: a.username, role: a.role, disabled: Boolean(a.disabled), invited: Boolean(a.invite) });
+    return {
+      assigned: people.filter((a) => a.servers.includes(s.id)).map(row),
+      candidates: people.filter((a) => !a.servers.includes(s.id)).map(row),
+    };
+  };
+  const serverOr404 = (req) => {
+    const s = monitor.get(req.params.id);
+    if (!s) throw fail(404, "Unknown server");
+    return s;
+  };
+
+  app.get("/api/web/servers/:id/access", auth, ownerOnly, router(async (req, res) => {
+    res.json(accessView(serverOr404(req)));
+  }));
+
+  app.post("/api/web/servers/:id/access", auth, ownerOnly, router(async (req, res) => {
+    const s = serverOr404(req);
+    const a = accounts.get(String(req.body?.account_id || ""));
+    if (!a) throw fail(404, "Unknown account");
+    if (a.role === "owner") throw fail(400, `${a.username} is an owner and sees every server already`);
+    accounts.assign(a.id, s.id);
+    audit(req.who, `${req.who.name} gave ${a.username} access to ${s.name}`, s);
+    res.json(accessView(s));
+  }));
+
+  app.delete("/api/web/servers/:id/access/:account", auth, ownerOnly, router(async (req, res) => {
+    const s = serverOr404(req);
+    const a = accounts.get(req.params.account);
+    if (!a) throw fail(404, "Unknown account");
+    accounts.unassign(a.id, s.id);
+    audit(req.who, `${req.who.name} removed ${a.username}'s access to ${s.name}`, s);
+    res.json(accessView(s));
+  }));
+
   // ---------------------------------------------------------------- accounts (owners)
   const serverNames = () => monitor.list().map((s) => ({ id: s.id, name: s.name }));
   const notSelf = (req, what) => {

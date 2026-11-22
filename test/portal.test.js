@@ -389,3 +389,33 @@ test("owner: reassign, disable, reset, delete; can't lock themselves out; logins
   http.broadcast({ type: "removed", id: ids["web-1"] });
   assert.ok(!accounts.all().some((a) => a.servers.includes(ids["web-1"])));
 });
+
+test("owner: who can see a server, chosen on the server (staff/user only; logged; others can't)", async () => {
+  const add = await owner.post("/api/web/servers", { name: "access-box" });
+  const sid = add.json.server.id;
+  const u = await owner.post("/api/web/accounts", { username: "carol", role: "user" });
+  const carol = u.json.account.id;
+  const o = await owner.post("/api/web/accounts", { username: "dave", role: "owner" });
+  let r = await owner.get(`/api/web/servers/${sid}/access`);
+  assert.equal(r.status, 200);
+  assert.ok(r.json.candidates.some((a) => a.username === "carol"));
+  assert.ok(!r.json.candidates.some((a) => a.username === "dave")); // owners see everything anyway
+  r = await owner.post(`/api/web/servers/${sid}/access`, { account_id: carol });
+  assert.deepEqual(r.json.assigned.map((a) => a.username), ["carol"]);
+  assert.ok(accounts.get(carol).servers.includes(sid));
+  assert.equal((await owner.post(`/api/web/servers/${sid}/access`, { account_id: o.json.account.id })).status, 400);
+  assert.equal((await owner.post(`/api/web/servers/nope/access`, { account_id: carol })).status, 404);
+  assert.equal((await owner.post(`/api/web/servers/${sid}/access`, { account_id: "nope" })).status, 404);
+  const staff = new Client();
+  const inv = /#invite=(.+)$/.exec((await owner.post("/api/web/accounts", { username: "erin", role: "staff", servers: [sid] })).json.invite_url)[1];
+  const t = await staff.post(`/api/web/invite/${inv}/totp`);
+  await staff.post(`/api/web/invite/${inv}/finish`, { password: "erin-password-1", method: "totp", code: codeNow(t.json.secret) });
+  assert.equal((await staff.get(`/api/web/servers/${sid}/access`)).status, 403);
+  assert.equal((await staff.post(`/api/web/servers/${sid}/access`, { account_id: carol })).status, 403);
+  r = await owner.req("DELETE", `/api/web/servers/${sid}/access/${carol}`, {});
+  assert.deepEqual(r.json.assigned.map((a) => a.username), ["erin"]);
+  assert.ok(!accounts.get(carol).servers.includes(sid));
+  const audit = (await owner.get("/api/web/events?kind=audit")).json.events.map((e) => e.text);
+  assert.ok(audit.some((x) => /gave carol access to access-box/.test(x)));
+  assert.ok(audit.some((x) => /removed carol's access to access-box/.test(x)));
+});

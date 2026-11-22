@@ -238,6 +238,14 @@ export class Accounts {
     }
   }
 
+  unassign(id, serverId) {
+    const a = this.get(id);
+    if (a && a.servers.includes(serverId)) {
+      a.servers = a.servers.filter((x) => x !== serverId);
+      this.store.save();
+    }
+  }
+
   newInvite(a) {
     const token = randomToken();
     a.invite = { hash: sha256(token), expires: nowMs() + INVITE_HOURS * 3600_000 };

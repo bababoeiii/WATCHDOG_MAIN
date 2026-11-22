@@ -191,6 +191,8 @@ Who may see what depends on the account:
 - **First login (owners):** send `/login` to the bot: it answers with a one-time link (10 minutes).
   `ADMIN_IDS` are always owners. Optional: send `/setdomain` to @BotFather with your domain, and the
   login page also gets a "Log in with Telegram" button.
+- **Who sees which server:** on a server's page (*Servers* → the server) an owner adds or removes the
+  staff and user accounts that may see it (or ticks servers per account under *Accounts*; same thing).
 - **Accounts:** an owner creates them under *Accounts* (username, role, servers) and sends the invite
   link (48 h, once). The person sets a password (10+ characters) and a second step: an
   **authenticator app** (QR code) or **e-mail codes** (needs `SMTP_*` in `.env`). Accounts with a
