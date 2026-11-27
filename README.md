@@ -12,7 +12,8 @@ sub servers report metrics with a per-server token, and the main server tells th
                           │
                  ┌────────┴────────────────────────┐
                  │  MAIN SERVER (this project)     │
-                 │  • Telegram bot + live dashboard │
+                 │  • Telegram bot + website        │
+                 │    (= the Telegram Mini App)     │
                  │  • creates / replaces / revokes  │
                  │    a token for every sub server  │
                  │  • down / up / reboot alerts     │
@@ -34,7 +35,7 @@ sub servers report metrics with a per-server token, and the main server tells th
 | reports again | 🟢 back online (with downtime, "rebooted" if it did) |
 | machine shuts down / reboots | ⏻ shutting down / rebooting |
 | sub-server service stopped | ⏹ agent stopped |
-| CPU / RAM / disk / temperature over the limit | ⚠️ alert … then ✅ resolved |
+| CPU / RAM / disk / temperature over the limit | ⚠️ alert … then ✅ resolved (two-socket machines: per CPU, "CPU 2") |
 | a server installed a new version | ⬆️ updated `abc1234` → `def5678` |
 | an update failed (and was rolled back) | ❗ update failed + reason |
 | every 6 h | 🩺 health report (silent) |
@@ -173,20 +174,35 @@ Safety rules:
 
 `https://YOUR-DOMAIN/` in any browser opens the login page. After logging in:
 
-- **Servers** — like the Telegram dashboard: a card per server with CPU, RAM, disk, temperature, network,
-  load, uptime and alerts, live; click one for the last hour as charts (CPU, RAM, temperature, network),
-  every core, every disk, the top processes and the sensors.
+- **Servers** — a card per server with CPU, RAM, disk, temperature, network, load, uptime and alerts,
+  live; click one for the last hour as charts (CPU, RAM, temperature, network), every core, every disk,
+  the top processes and the sensors. Machines with two (or more) CPU sockets show each CPU's
+  temperature separately (cards, tiles, one line per CPU in the chart).
+  Owners also get **Manage** on a server's page: *Update from GitHub*, *New token* (old one revoked,
+  new `.env` lines shown once) and *Remove server* — and the main server's version with *Update*.
 - **Notifications** — what is down right now, and the notification history (also what came in while
   muted), live, filterable by server and type.
 - **Accounts** and **Activity** — owners only.
 
 Who may see what depends on the account:
 
-| | sees | add servers, reboot | accounts, activity log |
+| | sees | add servers | update / new token / remove, accounts, activity log |
 |---|---|---|---|
 | **Owner** | every server + main-server events | ✔ | ✔ |
-| **Staff** | the servers assigned to them | ✔ (a server they add is assigned to them; reboot only their servers) | ✖ |
+| **Staff** | the servers assigned to them | ✔ (a server they add is assigned to them) | ✖ |
 | **User** | the servers assigned to them | ✖ | ✖ |
+
+Nothing on the website or in the bot can run commands on a sub server or shut one down: it is
+view-only. (The only action that reaches a sub server is "update the agent from GitHub", owners only.)
+
+**Telegram = the website.** The bot's 📈 Dashboard button opens this same website inside Telegram
+(a Mini App, at `/` and the old `/app/` address). There it logs in by itself — no password:
+
+- `ADMIN_IDS` → owner;
+- an account with a **Telegram ID** (set it under *Accounts*) → that account, with its role and servers;
+- anyone else sees "no access" with their Telegram ID, so they can send it to you.
+
+`WEBAPP_URL` can stay empty: it defaults to `PUBLIC_URL`.
 
 - **First login (owners):** send `/login` to the bot: it answers with a one-time link (10 minutes).
   `ADMIN_IDS` are always owners. Optional: send `/setdomain` to @BotFather with your domain, and the
@@ -198,10 +214,7 @@ Who may see what depends on the account:
   **authenticator app** (QR code) or **e-mail codes** (needs `SMTP_*` in `.env`). Accounts with a
   Telegram ID can also use the Telegram button. *Reset login* gives a new invite link; *Disable* and
   *Delete* end their sessions at once.
-- **Reboot** from *Servers* works only for sub servers with `ALLOW_REMOTE_REBOOT=true` in their `.env`
-  (off by default), and only while they are online — a machine that is off can't be started from here.
-- Every reboot, added server and account change is in *Activity* (owners) and the reboot request also
-  goes to Telegram.
+- Every added / removed server, new token, update request and account change is in *Activity* (owners).
 - Security: passwords are stored as scrypt hashes, invite links/codes/sessions only as SHA-256 hashes;
   10 failed logins per username or IP lock that for 15 minutes; the session cookie is `HttpOnly`,
   `SameSite=Lax` and `Secure` over HTTPS; changes must be JSON from the same site.
@@ -222,7 +235,8 @@ The installer adds `watchdog-main` (a link to `control.sh`):
 
 In a private chat the bot keeps a button bar under the message box (it appears by itself after an
 install or update; `/start` brings it back): **📊 Status · ⚠️ Alerts · 🖥 Servers · 🏷 Version ·
-📈 Dashboard · 🔕 Mute 1h / 🔔 Unmute · ⬆️ Update all** (asks before it runs). Groups don't get it.
+📈 Dashboard · 🔕 Mute 1h / 🔔 Unmute · ⬆️ Update all** (owners only; asks before it runs). Groups don't
+get it.
 
 | Command | |
 |---|---|
@@ -235,10 +249,21 @@ install or update; `/start` brings it back): **📊 Status · ⚠️ Alerts · �
 | `/version` | versions vs. each project's GitHub repo |
 | `/update all \| subs \| main \| <name>` | update now (`all` = both sides, `subs` = all sub servers; one summary) |
 | `/dashboard` | open the live dashboard |
-| `/login` | one-time login link for the website (owners) |
-| `/mute 60` · `/unmute` | silence notifications |
+| `/login` | one-time login link for the website |
+| `/mute 60` · `/unmute` | silence notifications (owners: for everyone; staff/users: only for themselves) |
 
-Only users in `ADMIN_IDS` can use the bot and dashboard. Tokens are only sent in private chats.
+Who may use the bot: `ADMIN_IDS` (owners) and every enabled account with a Telegram ID — with the same
+role as on the website:
+
+| | commands | servers |
+|---|---|---|
+| **Owner** | all | all |
+| **Staff** | `/status` `/alerts` `/servers` `/version` `/dashboard` `/login` `/mute` + `/add` (assigned to them) | assigned to them |
+| **User** | the same, without `/add` | assigned to them |
+
+`/token`, `/remove`, `/update` and ⬆️ Update all are owners only. Staff and users with a Telegram ID
+also get notifications, but only about their own servers (and never main-server messages);
+`ALERT_CHAT_IDS` / `ADMIN_IDS` still get everything. Tokens are only sent in private chats.
 
 ## Settings
 
@@ -253,7 +278,7 @@ Only users in `ADMIN_IDS` can use the bot and dashboard. Tokens are only sent in
 | `CPU_ALERT_PERCENT` / `_FOR_SECONDS` | 90 / 120 | |
 | `RAM_ALERT_PERCENT` / `_FOR_SECONDS` | 90 / 120 | |
 | `DISK_ALERT_PERCENT` / `_FOR_SECONDS` | 90 / 0 | fullest disk |
-| `TEMP_ALERT_CELSIUS` / `_FOR_SECONDS` | 80 / 60 | hottest sensor |
+| `TEMP_ALERT_CELSIUS` / `_FOR_SECONDS` | 80 / 60 | hottest sensor; with two CPU sockets: each CPU on its own |
 | `ALERT_HYSTERESIS` | 5 | how far below the limit before "resolved" |
 | `AUTO_UPDATE` · `UPDATE_CHECK_MINUTES` · `UPDATE_BRANCH` · `UPDATE_GITHUB_TOKEN` | true · 30 · checked-out branch · — | |
 | `DATABASE_URL` | — (required) | PostgreSQL: `postgres://USER:PASSWORD@127.0.0.1:5432/DATABASE`. All data lives there |
@@ -262,7 +287,6 @@ Only users in `ADMIN_IDS` can use the bot and dashboard. Tokens are only sent in
 | `TIMEZONE` | server's own | time zone for times in Telegram messages, e.g. `America/Toronto` |
 | `PORT` | 8080 | local port of the Node app; aaPanel/nginx proxies to it (`npm run setup` picks a free one) |
 | `HOST` | 127.0.0.1 | `127.0.0.1` = only via aaPanel/nginx; `0.0.0.0` = reachable directly |
-| `DEV_NO_AUTH` | false | open `http://localhost:8080/app/` without Telegram. **Never in production.** |
 
 ## Tests
 
@@ -287,7 +311,7 @@ TEST_DATABASE_URL=postgres://watchdog:PASSWORD@127.0.0.1:5432/watchdog_test npm 
 ```
 src/        index, server, monitor, bot, notifier, telegramAuth, store, format, config, updater,
             portal (website API), accounts (logins, 2FA), events (notification log), mailer, db (PostgreSQL)
-public/     index.html (Telegram dashboard, /app/), portal.html (website, /)
+public/     portal.html (the website, at / and /app/ — also the Telegram Mini App)
 scripts/    setup.js (npm run setup) · nginx.js (npm run nginx [--apply|--remove] → aaPanel site config)
 control.sh  watchdog-main start|restart|reload|test|health · scripts/check.js (the self-check)
 install.sh  aaPanel install · Dockerfile · docker-compose.yml · watchdog-main.service · .env.example

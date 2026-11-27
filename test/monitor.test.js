@@ -1,6 +1,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Monitor } from "../src/monitor.js";
+import { metricsLine } from "../src/format.js";
 import { Store } from "../src/store.js";
 import { fakeClock, report, testConfig } from "./helpers.js";
 
@@ -144,8 +145,8 @@ test("version changes and update failures are reported once", () => {
   step(5, s, { extra: { version: { commit: "bbb2222", enabled: true, error: "boom" } } });
   assert.equal(msgs.filter((m) => /update failed/.test(m.t)).length, 1);
   mon.requestUpdate(s.id);
-  assert.deepEqual(step(5, s), { update: true, reboot: false });
-  assert.deepEqual(step(5, s), { update: false, reboot: false });
+  assert.deepEqual(step(5, s), { update: true });
+  assert.deepEqual(step(5, s), { update: false });
 });
 
 test("a malicious report is stored sanitised", () => {
@@ -235,4 +236,25 @@ test("followed updates: one server at a time each, different servers in parallel
   step(1, a, v("aaa1111", { last_check: 200 }));
   assert.equal((await ra.done)[0].state, "current");
   assert.equal(mon.runs.size, 0);
+});
+
+test("two CPUs: a temperature each — status line, chart history, an alert per CPU", () => {
+  const s = mon.addServer("dual").server;
+  const temp = (a, b) => ({ temp: { max: Math.max(a, b), max_label: "cpu CPU", sensors: [], cpus: [{ label: "CPU 1", current: a }, { label: "CPU 2", current: b }] } });
+  step(0, s, temp(55, 61));
+  assert.deepEqual(s.payload.temp.cpus.map((c) => c.current), [55, 61]);
+  assert.match(metricsLine(s.payload), /🌡 CPU1 55°C · CPU2 61°C/);
+  const point = mon.history(s.id).at(-1);
+  assert.deepEqual(point.slice(7), [55, 61]); // one chart line per CPU
+  step(5, s, temp(56, 86)); // CPU 2 over 80 °C
+  const alert = msgs.find((m) => /High temperature/.test(m.t));
+  assert.match(alert.t, /High temperature<\/b> on CPU 2/);
+  assert.equal(mon.activeAlerts().filter(([x]) => x.id === s.id).map(([, a]) => a.detail).join(), "CPU 2");
+  step(5, s, temp(57, 60)); // back below 80 − 5
+  assert.ok(msgs.some((m) => /high temperature resolved on CPU 2/.test(m.t)));
+  // one CPU: as before, no extra chart columns
+  const one = mon.addServer("single").server;
+  step(0, one, { temp: { max: 50, max_label: "cpu Package", sensors: [] } });
+  assert.equal(mon.history(one.id).at(-1).length, 7);
+  assert.match(metricsLine(one.payload), /🌡 50°C/);
 });

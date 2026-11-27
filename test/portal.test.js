@@ -1,4 +1,4 @@
-// Web portal: accounts, second step, Telegram login, permissions, event log, live updates, reboot.
+// Website: accounts, second step, Telegram login, permissions, event log, live updates.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -178,8 +178,7 @@ test("page + security headers; API needs a login; CSRF guards", async () => {
   const page = await fetch(`${base}/`);
   assert.equal((await fetch(`${base}/portal/`)).status, 404); // gone: the home page is the login page
   assert.equal(page.status, 200);
-  assert.match(page.headers.get("content-security-policy"), /frame-ancestors 'none'/);
-  assert.equal(page.headers.get("x-frame-options"), "DENY");
+  assert.match(page.headers.get("content-security-policy"), /frame-ancestors 'self' https:\/\/web\.telegram\.org https:\/\/\*\.telegram\.org$/); // only Telegram may frame it
   assert.equal((await new Client().get("/api/web/me")).status, 401);
   assert.equal((await new Client().get("/api/web/events")).status, 401);
   assert.equal((await new Client().req("POST", "/api/web/login", "username=a&password=b", { "Content-Type": "application/x-www-form-urlencoded" })).status, 415);
@@ -285,9 +284,9 @@ test("too many wrong passwords: locked for a while", async () => {
   assert.equal((await c.post("/api/web/login", { username: "lockme", password: "again" })).status, 429);
 });
 
-test("roles: who sees which servers and events; who may add, reboot, manage accounts", async () => {
+test("roles: who sees which servers and events; who may add servers, manage accounts", async () => {
   // reports make events: web-1 (alice's) and db-1 (bob's)
-  await agentReport(ids["web-1:token"], { allow_reboot: true });
+  await agentReport(ids["web-1:token"]);
   await agentReport(ids["db-1:token"]);
   const names = async (c) => (await c.get("/api/web/overview")).json.servers.map((s) => s.name).sort();
   assert.deepEqual(await names(owner), ["db-1", "web-1"]);
@@ -302,33 +301,12 @@ test("roles: who sees which servers and events; who may add, reboot, manage acco
 
   assert.equal((await alice.get("/api/web/accounts")).status, 403);
   assert.equal((await bob.post("/api/web/servers", { name: "bob-box" })).status, 403);
-  assert.equal((await bob.post(`/api/web/servers/${ids["db-1"]}/reboot`)).status, 403);
 
   // staff: a server they add is assigned to them
   const added = await alice.post("/api/web/servers", { name: "web-2" });
   assert.equal(added.status, 200);
   assert.deepEqual(await names(alice), ["web-1", "web-2"]);
-  assert.equal((await alice.post(`/api/web/servers/${ids["db-1"]}/reboot`)).status, 404); // not hers
-  assert.equal((await alice.post(`/api/web/servers/${added.json.server.id}/reboot`)).status, 409); // offline
-});
-
-test("reboot: only when the sub server allows it; delivered once; logged", async () => {
-  // db-1 didn't send allow_reboot
-  assert.equal((await owner.post(`/api/web/servers/${ids["db-1"]}/reboot`)).status, 409);
-  const r = await alice.post(`/api/web/servers/${ids["web-1"]}/reboot`);
-  assert.equal(r.status, 200);
-  assert.equal(r.json.server.reboot_pending, true);
-  assert.equal((await agentReport(ids["web-1:token"], { allow_reboot: true })).reboot, true);
-  assert.equal((await agentReport(ids["web-1:token"], { allow_reboot: true })).reboot, undefined); // once
-  const ev = (await alice.get(`/api/web/events?kind=reboot_request`)).json.events[0];
-  assert.match(ev.text, /reboot requested by alice/);
-  const audit = (await owner.get("/api/web/events?kind=audit")).json.events.map((e) => e.text);
-  assert.ok(audit.some((t) => /alice rebooted web-1/.test(t)));
-  assert.ok(audit.some((t) => /alice added server web-2/.test(t)));
-  // not picked up in time: dropped
-  await alice.post(`/api/web/servers/${ids["web-1"]}/reboot`);
-  mon.get(ids["web-1"]).pendingReboot.expires = Date.now() / 1000 - 1;
-  assert.equal((await agentReport(ids["web-1:token"], { allow_reboot: true })).reboot, undefined);
+  assert.equal((await alice.post(`/api/web/servers/${ids["web-1"]}/reboot`)).status, 404); // remote reboot is gone
 });
 
 test("live: each viewer gets only their servers' events", async () => {
@@ -341,12 +319,15 @@ test("live: each viewer gets only their servers' events", async () => {
       ws.on("error", reject);
     });
   const a = await open(alice), b = await open(bob);
-  const rejected = await new Promise((r) => {
+  const closedWith = await new Promise((r) => {
+    // no cookie and no Telegram login as the first message: closed, nothing sent
     const ws = new WebSocket(`${base.replace("http", "ws")}/ws/web`);
-    ws.on("error", () => r(true));
-    ws.on("open", () => r(false));
+    const got = [];
+    ws.on("message", (m) => got.push(m));
+    ws.on("open", () => ws.send(JSON.stringify({ type: "auth", initData: "auth_date=1&hash=00" })));
+    ws.on("close", (code) => r({ code, got: got.length }));
   });
-  assert.ok(rejected); // no cookie: no live updates
+  assert.deepEqual(closedWith, { code: 4401, got: 0 });
   mon.handleGoodbye(mon.get(ids["web-1"]), "shutdown"); // web-1 goes offline → event + server update
   await new Promise((r) => setTimeout(r, 150));
   assert.ok(a.got.some((m) => m.type === "event" && m.event.server === ids["web-1"]));
@@ -358,7 +339,7 @@ test("live: each viewer gets only their servers' events", async () => {
 
 test("muted notifications are still logged, marked muted", async () => {
   notifier.mute(10);
-  await agentReport(ids["web-1:token"], { allow_reboot: true }); // back online
+  await agentReport(ids["web-1:token"]); // back online
   notifier.unmute();
   const e = (await owner.get(`/api/web/events?server=${ids["web-1"]}&kind=online`)).json.events[0];
   assert.equal(e.muted, true);

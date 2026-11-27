@@ -43,6 +43,8 @@ export function historyPoint(ts, p) {
     p.net?.rx_rate ?? null,
     p.net?.tx_rate ?? null,
     worstDisk(p)?.percent ?? null,
+    // [7..10] = CPU 1..4 temperatures on machines with several CPUs (the charts draw one line each)
+    ...(p.temp?.cpus?.length >= 2 ? p.temp.cpus.slice(0, 4).map((c) => c.current) : []),
   ];
 }
 
@@ -93,7 +95,22 @@ export class Monitor {
     ].filter((r) => r.threshold > 0);
     // a rule that was switched off (threshold 0) must not leave an alert behind
     const keys = new Set(this.rules.map((r) => r.key));
-    for (const rt of this.runtime?.values() || []) for (const k of Object.keys(rt.alerts)) if (!keys.has(k)) delete rt.alerts[k];
+    const kept = (k) => keys.has(k) || (keys.has("temp") && /^temp\d+$/.test(k)); // per-CPU temperature
+    for (const rt of this.runtime?.values() || []) for (const k of Object.keys(rt.alerts)) if (!kept(k)) delete rt.alerts[k];
+  }
+
+  /**
+   * The rules for one server's report: with two or more CPUs, the temperature rule becomes one rule
+   * per CPU (alerts say which CPU: "High temperature on CPU 2").
+   */
+  rulesFor(p) {
+    const cpus = p?.temp?.cpus;
+    const temp = this.rules.find((r) => r.key === "temp");
+    if (!temp || !(cpus?.length >= 2)) return this.rules;
+    return [
+      ...this.rules.filter((r) => r !== temp),
+      ...cpus.map((c, i) => ({ ...temp, key: `temp${i}`, measure: (q) => [q.temp?.cpus?.[i]?.current, q.temp?.cpus?.[i]?.label || `CPU ${i + 1}`] })),
+    ];
   }
 
   // ------------------------------------------------------------------ registry & tokens
@@ -348,9 +365,9 @@ export class Monitor {
     return this.runtime.get(id)?.history || [];
   }
 
-  activeAlerts() {
+  activeAlerts(servers = this.list()) {
     const out = [];
-    for (const s of this.list()) {
+    for (const s of servers) {
       if (s.status !== "online") continue;
       for (const a of Object.values(this.rt(s.id).alerts)) if (a.active) out.push([s, a]);
     }
@@ -362,8 +379,9 @@ export class Monitor {
     return { ...s, alerts: this.rt(s.id).alerts };
   }
 
-  statusText(title) {
-    return statusMessage(this.list().map((s) => this.serverForText(s)), title);
+  /** @param servers which servers (default: all) — the bot passes only the ones that person may see */
+  statusText(title, servers = this.list()) {
+    return statusMessage(servers.map((s) => this.serverForText(s)), title);
   }
 
   // ------------------------------------------------------------------ agent events
@@ -403,9 +421,8 @@ export class Monitor {
       s.offlineReason = null;
     }
 
-    s.allowReboot = raw?.allow_reboot === true; // ALLOW_REMOTE_REBOOT on the sub server
-    const reboot = Boolean(s.pendingReboot && s.pendingReboot.expires > now);
-    if (s.pendingReboot) s.pendingReboot = null; // delivered now, or too late to deliver
+    delete s.allowReboot; // fields of the removed remote reboot, gone from older data
+    delete s.pendingReboot;
     const version = sanitizeVersion(raw?.version);
     const run = this.runOf(s.id);
     const inRun = run?.items.get(s.id);
@@ -417,21 +434,10 @@ export class Monitor {
 
     const alertsChanged = this.evaluateAlerts(s, now);
     // status/version/flag changes are saved right away; plain metrics at most once a minute
-    const important = prevStatus !== "online" || rebooted || versionChanged || update || reboot || alertsChanged;
+    const important = prevStatus !== "online" || rebooted || versionChanged || update || alertsChanged;
     this.store.save(important ? 1000 : ROUTINE_SAVE_MS);
     this.broadcast({ type: "update", server: this.summary(s), point: rt.history[rt.history.length - 1] });
-    return { update, reboot };
-  }
-
-  /** Ask an online sub server to reboot (portal). Dropped if it isn't picked up within waitSeconds. */
-  requestReboot(id, by, waitSeconds = 120) {
-    const s = this.get(id);
-    if (!s) return false;
-    s.pendingReboot = { by: String(by), at: nowSec(), expires: nowSec() + waitSeconds };
-    this.notify(`🔁 ${nameHtml(s)}: reboot requested by <b>${esc(by)}</b>`, true, { server: s, kind: "reboot_request" });
-    this.store.save();
-    this.broadcast({ type: "update", server: this.summary(s) });
-    return true;
+    return { update };
   }
 
   /** @returns {boolean} whether anything worth saving changed */
@@ -506,7 +512,15 @@ export class Monitor {
   evaluateAlerts(s, now) {
     const alerts = this.rt(s.id).alerts;
     let changed = false;
-    for (const rule of this.rules) {
+    const rules = this.rulesFor(s.payload);
+    // switched between one temperature and one per CPU: the other kind's alerts are over
+    const keys = new Set(rules.map((r) => r.key));
+    for (const k of Object.keys(alerts)) {
+      if (keys.has(k)) continue;
+      if (alerts[k].active) changed = true;
+      delete alerts[k];
+    }
+    for (const rule of rules) {
       const [value, detail] = rule.measure(s.payload || {});
       const st = (alerts[rule.key] ||= { label: rule.label, unit: rule.unit, active: false, breachSince: null });
       if (value === null || value === undefined) continue;

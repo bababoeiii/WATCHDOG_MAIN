@@ -1,17 +1,17 @@
 // Website (the login page is the home page, /): log in with a password + second step or with Telegram, then see the
-// notifications of the servers you may see, live. Staff and owners add servers and reboot them;
+// notifications of the servers you may see, live. Staff and owners add servers;
 // owners manage accounts. Roles:
 //   owner — every server, main-server events, activity log, accounts
-//   staff — assigned servers; can add servers (assigned to them) and reboot their servers
+//   staff — assigned servers; can add servers (assigned to them)
 //   user  — assigned servers, read only
 import path from "node:path";
 import QRCode from "qrcode";
 import { WebSocketServer } from "ws";
 import { KINDS } from "./events.js";
-import { MIN_PASSWORD, ROLE_LABEL, verifyTelegramLogin } from "./accounts.js";
+import { MIN_PASSWORD, ROLE_LABEL, tgName, verifyTelegramLogin } from "./accounts.js";
+import { validateInitData } from "./telegramAuth.js";
 
 const COOKIE = "wd_session";
-const REBOOT_WAIT_S = 120; // a reboot request is dropped if the server doesn't pick it up in time
 
 /** No Origin header (same-site navigation, curl) is fine; a different or unparsable one is not. */
 function sameOrigin(origin, host) {
@@ -39,7 +39,9 @@ function parseCookies(header) {
  * @param o.botUsername () => string|null — for the Telegram login button
  * @param o.publicDir  folder with portal.html
  */
-export function createPortal({ app, cfg, monitor, notifier, events, accounts, notify, botUsername, publicDir }) {
+export function createPortal({ app, cfg, monitor, notifier, events, accounts, notify, botUsername, publicDir, updateMain = null, onAccountsChanged = null }) {
+  // someone may have been linked to a Telegram ID: the bot greets them (with their button bar)
+  const accountsChanged = () => Promise.resolve(onAccountsChanged?.()).catch((e) => console.error("after an account change:", e.message));
   // ---------------------------------------------------------------- who may see what
   const canSeeServer = (who, id) => who.servers === null || who.servers.has(id);
   const canSee = (who, e) => (e.kind === "audit" ? who.role === "owner" : e.server ? canSeeServer(who, e.server) : who.role === "owner");
@@ -48,18 +50,20 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
 
   const serverView = (s) => {
     const sum = monitor.summary(s);
-    const now = Date.now() / 1000;
     return {
       id: s.id, name: s.name, status: s.status, status_since: s.statusSince, last_seen: s.lastSeen,
       offline_reason: s.offlineReason, alerts: sum.alerts, version: s.version?.commit || null,
-      allow_reboot: Boolean(s.allowReboot), reboot_pending: Boolean(s.pendingReboot && s.pendingReboot.expires > now),
       metrics: s.payload || null, // the latest report: CPU, RAM, disks, temperatures, network, processes …
+      update: s.version
+        ? { state: monitor.subVersionState(s), latest: monitor.subLatest(s), enabled: s.version.enabled, auto: s.version.auto,
+            error: s.version.error || null, reason: s.version.reason || null, requested: Boolean(s.pendingUpdate) }
+        : { state: "unknown", requested: Boolean(s.pendingUpdate) },
     };
   };
   const meView = (who) => ({
     name: who.name, role: who.role, role_label: ROLE_LABEL[who.role],
     servers: who.servers === null ? null : [...who.servers], can_operate: mayOperate(who), is_owner: who.role === "owner",
-    self_id: who.accountId || null,
+    self_id: who.accountId || null, telegram: Boolean(who.viaInitData),
   });
   const origin = (req) => cfg.publicUrl || `${req.protocol}://${req.get("host")}`;
   const inviteUrl = (req, token) => `${origin(req)}/#invite=${token}`;
@@ -71,7 +75,17 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     const days = Number(cfg.sessionDays) || 7;
     res.cookie(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: req.secure, path: "/", maxAge: days * 86400_000 });
   };
-  const identify = (req) => accounts.identify(parseCookies(req.get("cookie"))[COOKIE]);
+  /** Opened inside Telegram (Mini App): signed initData instead of a cookie. */
+  const fromInitData = (initData) => {
+    const u = initData && validateInitData(initData, cfg.botToken);
+    if (!u) return null;
+    const who = accounts.whoFor(accounts.telegramRef(u));
+    return who && { ...who, viaInitData: true, tgUserId: u.id, tgName: tgName(u) };
+  };
+  const identify = (req) => {
+    const init = req.get("x-telegram-init-data");
+    return init ? fromInitData(init) : accounts.identify(parseCookies(req.get("cookie"))[COOKIE]);
+  };
 
   /** async route with errors answered as JSON ({ error }) */
   const router = (handler) => async (req, res) => {
@@ -90,7 +104,8 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
   app.use("/api/web", (req, res, next) => {
     res.set({ "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store" });
     if (req.method !== "GET") {
-      if (!req.is("application/json")) return res.status(415).json({ error: "JSON only" });
+      // other sites can only send a plain POST without asking first (PATCH/DELETE get a CORS preflight)
+      if (req.method === "POST" && !req.is("application/json")) return res.status(415).json({ error: "JSON only" });
       if (!sameOrigin(req.get("origin"), req.get("host"))) return res.status(403).json({ error: "wrong origin" });
     }
     next();
@@ -98,24 +113,33 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
 
   const auth = (req, res, next) => {
     const who = identify(req);
-    if (!who) return res.status(401).json({ error: "Please log in" });
+    if (!who) {
+      const init = req.get("x-telegram-init-data");
+      const u = init && validateInitData(init, cfg.botToken);
+      if (u) return res.status(403).json({ error: `Your Telegram account (ID ${u.id}) has no access. Ask an owner to add this ID to your account.`, telegram_id: u.id });
+      return res.status(401).json({ error: init ? "Telegram login expired: close and reopen the dashboard" : "Please log in" });
+    }
     req.who = who;
     next();
   };
   const ownerOnly = (req, res, next) => (req.who.role === "owner" ? next() : res.status(403).json({ error: "Owners only" }));
   const operatorsOnly = (req, res, next) => (mayOperate(req.who) ? next() : res.status(403).json({ error: "Not allowed for your role" }));
 
-  // ---------------------------------------------------------------- the page (home page)
-  app.get("/", (req, res) => {
+  // ---------------------------------------------------------------- the page (home page; /app = Telegram Mini App)
+  // One page for the browser and for Telegram. Telegram's web client shows Mini Apps in a frame,
+  // so only Telegram may frame it (not other sites).
+  const page = (req, res) => {
     res.set({
-      "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
       "Content-Security-Policy":
         "default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; " +
         "img-src 'self' data: https://*.telegram.org https://t.me; frame-src https://oauth.telegram.org; connect-src 'self' wss: ws:; " +
-        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+        "base-uri 'none'; form-action 'self'; frame-ancestors 'self' https://web.telegram.org https://*.telegram.org",
     });
     res.sendFile(path.join(publicDir, "portal.html"));
-  });
+  };
+  app.get("/", page);
+  app.get(["/app", "/app/", "/app/index.html"], page); // WEBAPP_URL of older setups: same page
 
   // ---------------------------------------------------------------- login
   app.get("/api/web/config", (req, res) => {
@@ -209,6 +233,7 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
       kinds,
       retention_days: events.retentionDays,
       thresholds: Object.fromEntries(monitor.rules.map((r) => [r.key, r.threshold])),
+      main: req.who.role === "owner" ? mainVersion() : null,
       history_minutes: cfg.historyMinutes,
     });
   });
@@ -233,7 +258,7 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     res.json({ events: list });
   });
 
-  // ---------------------------------------------------------------- servers: add, reboot (staff + owners)
+  // ---------------------------------------------------------------- servers: add (staff + owners)
   app.post("/api/web/servers", auth, operatorsOnly, router(async (req, res) => {
     const { server, token } = monitor.addServer(req.body?.name);
     if (req.who.accountId && req.who.role !== "owner") accounts.assign(req.who.accountId, server.id); // staff see what they add
@@ -241,15 +266,6 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     res.json({ server: serverView(server), token, env: monitor.envSnippet(token), install: monitor.installCommand(token) });
   }));
 
-  app.post("/api/web/servers/:id/reboot", auth, operatorsOnly, router(async (req, res) => {
-    const s = monitor.get(req.params.id);
-    if (!s || !canSeeServer(req.who, s.id)) throw fail(404, "Unknown server");
-    if (s.status !== "online") throw fail(409, `${s.name} is offline: it can't receive the reboot (a machine that is off can't be started from here).`);
-    if (!s.allowReboot) throw fail(409, `${s.name} doesn't allow remote reboots. Set ALLOW_REMOTE_REBOOT=true in its .env and restart its agent.`);
-    monitor.requestReboot(s.id, req.who.name, REBOOT_WAIT_S);
-    audit(req.who, `${req.who.name} rebooted ${s.name}`, s);
-    res.json({ ok: true, server: serverView(s) });
-  }));
 
   // ---------------------------------------------------------------- who can see a server (owners)
   // Owners see every server anyway; this is about staff and user accounts.
@@ -290,6 +306,49 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     res.json(accessView(s));
   }));
 
+  // ---------------------------------------------------------------- owner tools (from the old Telegram dashboard)
+  const mainVersion = () => {
+    const v = monitor.updater?.info();
+    if (!v) return null;
+    return { commit: v.commit, branch: v.branch, latest: v.latest, enabled: v.enabled, auto: v.auto, reason: v.reason, error: v.error, pending_restart: v.pending_restart };
+  };
+
+  // update one sub server from its GitHub repo (it pulls on its next report)
+  app.post("/api/web/servers/:id/update", auth, ownerOnly, router(async (req, res) => {
+    const s = serverOr404(req);
+    monitor.requestUpdate(s.id);
+    audit(req.who, `${req.who.name} asked ${s.name} to update`, s);
+    res.json({ server: serverView(s) });
+  }));
+
+  // new token for a sub server: the old one stops working at once
+  app.post("/api/web/servers/:id/token", auth, ownerOnly, router(async (req, res) => {
+    const s = serverOr404(req);
+    const token = monitor.rotateToken(s.id);
+    audit(req.who, `${req.who.name} made a new token for ${s.name} (the old one is revoked)`, s);
+    res.json({ token, env: monitor.envSnippet(token), install: monitor.installCommand(token) });
+  }));
+
+  // stop monitoring a server and revoke its token
+  app.delete("/api/web/servers/:id", auth, ownerOnly, router(async (req, res) => {
+    const s = serverOr404(req);
+    monitor.removeServer(s.id); // its broadcast also drops it from every account
+    audit(req.who, `${req.who.name} removed server ${s.name}`);
+    res.json({ ok: true });
+  }));
+
+  // update the main server itself (it restarts if its code changed)
+  app.post("/api/web/main/update", auth, ownerOnly, router(async (req, res) => {
+    if (!updateMain) throw fail(503, "Updates are not available on this server");
+    audit(req.who, `${req.who.name} asked the main server to update`);
+    // npm ci can outlast nginx's 60 s proxy timeout: answer after 45 s at most, the update keeps going
+    const running = updateMain("website");
+    const slow = new Promise((r) => setTimeout(() => r({ status: "running" }), 45_000).unref());
+    const r = await Promise.race([running, slow]);
+    running.catch(() => {});
+    res.json({ status: r.status, from: r.from || null, to: r.to || null, restarting: Boolean(r.restarting), main: mainVersion() });
+  }));
+
   // ---------------------------------------------------------------- accounts (owners)
   const serverNames = () => monitor.list().map((s) => ({ id: s.id, name: s.name }));
   const notSelf = (req, what) => {
@@ -308,6 +367,7 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
       req.who.name,
     );
     audit(req.who, `${req.who.name} created ${ROLE_LABEL[account.role].toLowerCase()} account ${account.username}`);
+    if (account.telegramId) accountsChanged();
     res.json({ account: accounts.view(account), invite_url: inviteUrl(req, inviteToken) });
   }));
 
@@ -321,6 +381,7 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
     });
     const what = [b.role !== undefined && `role ${b.role}`, b.servers !== undefined && "servers", b.disabled !== undefined && (b.disabled ? "disabled" : "enabled"), b.email !== undefined && "e-mail", b.telegram_id !== undefined && "Telegram ID"].filter(Boolean).join(", ");
     audit(req.who, `${req.who.name} changed ${a.username}: ${what || "nothing"}`);
+    if (b.telegram_id !== undefined || b.disabled === false) accountsChanged();
     res.json({ account: accounts.view(a) });
   }));
 
@@ -346,24 +407,53 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
   const clients = new Set();
   const send = (ws, msg) => ws.readyState === 1 && ws.bufferedAmount < 1 << 20 && ws.send(JSON.stringify(msg));
 
-  /** Called from the HTTP server's "upgrade" for /ws/web. The session cookie is the login. */
+  /**
+   * Called from the HTTP server's "upgrade" for /ws/web. The login is the session cookie (browser),
+   * or, inside Telegram, a first message {"type":"auth","initData":…} (never in the URL).
+   */
+  const reidentify = (ws) => (ws.initData ? fromInitData(ws.initData) : accounts.identify(ws.token));
   const handleUpgrade = (req, socket, head) => {
     const token = parseCookies(req.headers.cookie)[COOKIE];
     const who = accounts.identify(token);
-    if (!who || !sameOrigin(req.headers.origin, req.headers.host)) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+    if (!sameOrigin(req.headers.origin, req.headers.host)) {
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
       return socket.destroy();
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      ws.who = who;
-      ws.token = token;
       ws.isAlive = true;
       ws.on("pong", () => (ws.isAlive = true));
-      ws.on("message", (m) => String(m) === "ping" && send(ws, { type: "pong" }));
-      ws.on("close", () => clients.delete(ws));
+      ws.on("close", () => {
+        clients.delete(ws);
+        clearTimeout(ws.authTimer);
+      });
       ws.on("error", () => clients.delete(ws));
-      clients.add(ws);
-      send(ws, { type: "hello", me: meView(who) });
+      const admit = (w) => {
+        clearTimeout(ws.authTimer);
+        ws.who = w;
+        clients.add(ws);
+        send(ws, { type: "hello", me: meView(w) });
+      };
+      ws.on("message", (m) => {
+        const text = String(m);
+        if (text === "ping") return ws.who && send(ws, { type: "pong" });
+        if (ws.who) return;
+        let msg;
+        try {
+          msg = JSON.parse(text);
+        } catch {
+          return ws.close(4400, "bad message");
+        }
+        const w = msg?.type === "auth" ? fromInitData(String(msg.initData || "")) : null;
+        if (!w) return ws.close(4401, "not logged in");
+        ws.initData = String(msg.initData);
+        admit(w);
+      });
+      if (who) {
+        ws.token = token;
+        admit(who);
+      } else {
+        ws.authTimer = setTimeout(() => ws.who || ws.close(4401, "not logged in"), 10_000);
+      }
     });
   };
 
@@ -390,7 +480,7 @@ export function createPortal({ app, cfg, monitor, notifier, events, accounts, no
   // every 30 s: drop dead sockets, and re-check each login (account disabled, servers re-assigned …)
   const heartbeat = setInterval(() => {
     for (const ws of clients) {
-      const who = accounts.identify(ws.token);
+      const who = reidentify(ws);
       if (!who) {
         ws.close(4401, "logged out");
         clients.delete(ws);

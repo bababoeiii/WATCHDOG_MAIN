@@ -60,7 +60,7 @@ function rereadEnvFile() {
 /** @returns {{cfg: object, problems: string[]}} */
 export function readConfig({ reload = false } = {}) {
   if (reload) rereadEnvFile();
-  const webappUrl = str("WEBAPP_URL").replace(/\/+$/, "/");
+  let webappUrl = str("WEBAPP_URL").replace(/\/+$/, "/");
   let publicUrl = str("PUBLIC_URL").replace(/\/+$/, "");
   if (!publicUrl && webappUrl) {
     try {
@@ -69,6 +69,8 @@ export function readConfig({ reload = false } = {}) {
       /* ignore */
     }
   }
+  // The Telegram Mini App is the website itself: without WEBAPP_URL, use the site (Telegram needs https)
+  if (!webappUrl && /^https:\/\//i.test(publicUrl)) webappUrl = `${publicUrl}/`;
 
   const cfg = {
     botToken: str("BOT_TOKEN"),

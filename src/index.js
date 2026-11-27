@@ -43,10 +43,15 @@ const events = new EventLog(db, cfg.notifyHistoryDays);
 await events.load();
 function notify(text, important = false, meta = {}) {
   events.add({ kind: meta.kind || "main", text, server: meta.server || null, important, muted: notifier.isMuted() });
-  if (meta.telegram !== false) notifier.send(text, important);
+  if (meta.telegram !== false) notifier.send(text, important, meta.server?.id ?? null);
 }
 const accounts = new Accounts(store, cfg, createMailer(cfg));
 const monitor = new Monitor(cfg, store, notify, (msg) => broadcast(msg));
+// staff and users linked to Telegram get the notifications of their servers (unless they /mute)
+notifier.audience = () =>
+  accounts.all()
+    .filter((a) => a.telegramId && !a.disabled)
+    .map((a) => ({ chatId: a.telegramId, servers: a.role === "owner" ? null : new Set(a.servers || []), muted: Boolean(accounts.mutedUntil(a.id)) }));
 
 // ---------------------------------------------------------------- auto-update (optional)
 let updaterMod = null;
@@ -108,7 +113,10 @@ const realBot = createBot(cfg, monitor, notifier, {}, updateMain, accounts);
 notifier.api = realBot.api;
 
 const botUsername = () => realBot.botInfo?.username || null; // throws until the bot connected: the portal catches it
-const http = createServer(cfg, monitor, notifier, updateMain, { events, accounts, notify, botUsername });
+const http = createServer(cfg, monitor, notifier, updateMain, {
+  events, accounts, notify, botUsername,
+  onAccountsChanged: () => realBot.sendMenu?.(),
+});
 broadcast = http.broadcast;
 
 http.server.on("error", (e) => {

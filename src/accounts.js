@@ -394,30 +394,74 @@ export class Accounts {
     return a;
   }
 
-  /** One-time login link for a Telegram owner, sent by the bot (/portal). Valid 10 minutes, once. */
-  loginLink(tgId, name = null) {
+  /**
+   * One-time login link, sent by the bot (/login) to whoever it knows: an owner (ADMIN_IDS) or an
+   * account linked to that Telegram ID. Valid 10 minutes, once.
+   * @param tgUser { id, username?, first_name? } (a bare number works too)
+   */
+  loginLink(tgUser, name = null) {
+    const u = typeof tgUser === "object" ? tgUser : { id: tgUser, first_name: name };
     const token = randomToken();
     const now = nowMs();
     for (const [k, l] of this.links) if (l.expires < now) this.links.delete(k);
-    this.links.set(sha256(token), { tgId, name, expires: now + 10 * 60_000 });
+    this.links.set(sha256(token), { user: { id: u.id, username: u.username, first_name: name || u.first_name }, expires: now + 10 * 60_000 });
     return token;
   }
   useLoginLink(token) {
     const key = sha256(token);
     const l = this.links.get(key);
     this.links.delete(key);
-    if (!l || l.expires < nowMs() || !this.cfg.adminIds.includes(l.tgId)) return null;
-    return { type: "tg", id: l.tgId, name: l.name };
+    if (!l || l.expires < nowMs()) return null;
+    const ref = this.telegramRef(l.user);
+    if (ref?.type === "tg" && l.user.first_name && !l.user.username) ref.name = l.user.first_name;
+    return ref && this.whoFor(ref) ? ref : null;
   }
 
-  /** Telegram login: an owner (ADMIN_IDS) or an account linked to that Telegram ID. */
-  telegramIdentity(tgUser) {
-    if (this.cfg.adminIds.includes(tgUser.id)) return { type: "tg", id: tgUser.id, name: tgName(tgUser) };
-    const a = this.all().find((x) => x.telegramId === tgUser.id && !x.disabled && !x.invite);
+  // ---------------------------------------------------------------- personal mute (bot /mute for staff and users)
+  muteAccount(id, minutes) {
+    const a = this.get(id);
     if (!a) return null;
-    a.lastLogin = nowMs() / 1000;
+    a.muteUntil = nowMs() / 1000 + minutes * 60;
     this.store.save();
-    return { type: "account", id: a.id };
+    return a.muteUntil;
+  }
+  unmuteAccount(id) {
+    const a = this.get(id);
+    if (a) {
+      delete a.muteUntil;
+      this.store.save();
+    }
+  }
+  mutedUntil(id) {
+    const a = this.get(id);
+    return a?.muteUntil && a.muteUntil > nowMs() / 1000 ? a.muteUntil : null;
+  }
+
+  /**
+   * Who a Telegram user is, wherever they come from (bot, Mini App, Telegram login button):
+   * an owner (ADMIN_IDS), or the account linked to that Telegram ID. Telegram has already proven
+   * who they are, so a linked account doesn't need its password set up; a disabled one is out.
+   * @returns a reference for sessions / whoFor(), or null
+   */
+  telegramRef(tgUser) {
+    if (this.cfg.adminIds.includes(tgUser.id)) return { type: "tg", id: tgUser.id, name: tgName(tgUser) };
+    const a = this.all().find((x) => x.telegramId === tgUser.id && !x.disabled);
+    return a ? { type: "account", id: a.id, via: "telegram" } : null;
+  }
+
+  /** Telegram login (button / Mini App): like telegramRef, and remembers the login time. */
+  telegramIdentity(tgUser) {
+    const ref = this.telegramRef(tgUser);
+    if (ref?.type === "account") {
+      this.get(ref.id).lastLogin = nowMs() / 1000;
+      this.store.save();
+    }
+    return ref;
+  }
+
+  /** The account linked to a Telegram user (null for ADMIN_IDS without an account, or nobody). */
+  accountForTelegram(tgId) {
+    return this.all().find((x) => x.telegramId === tgId && !x.disabled) || null;
   }
 
   // ---------------------------------------------------------------- sessions
@@ -455,13 +499,26 @@ export class Accounts {
     const key = sha256(token);
     const s = this.sessions[key];
     if (!s || s.expires < nowMs() / 1000) return null;
-    if (s.who.type === "tg") {
-      if (!this.cfg.adminIds.includes(s.who.id)) return null; // no longer an admin
-      return { key, name: s.who.name || `Telegram ${s.who.id}`, role: "owner", servers: null, telegramId: s.who.id };
+    const who = this.whoFor(s.who);
+    return who && { ...who, key };
+  }
+
+  /**
+   * What the website and the bot know about someone, from a reference (session or telegramRef):
+   * { name, role, servers: Set|null (null = all), accountId?, telegramId? } — or null if no longer allowed.
+   */
+  whoFor(ref) {
+    if (!ref) return null;
+    if (ref.type === "tg") {
+      if (!this.cfg.adminIds.includes(ref.id)) return null; // no longer an admin
+      return { name: ref.name || `Telegram ${ref.id}`, role: "owner", servers: null, telegramId: ref.id };
     }
-    const a = this.get(s.who.id);
-    if (!a || a.disabled || a.invite) return null; // a reset account has to finish its new invite first
-    return { key, name: a.username, role: a.role, servers: a.role === "owner" ? null : new Set(a.servers || []), accountId: a.id };
+    const a = this.get(ref.id);
+    if (!a || a.disabled) return null;
+    // a password login of a reset account has to finish its new invite first; Telegram needs no password
+    if (a.invite && ref.via !== "telegram") return null;
+    if (ref.via === "telegram" && a.telegramId === null) return null; // Telegram ID removed from the account
+    return { name: a.username, role: a.role, servers: a.role === "owner" ? null : new Set(a.servers || []), accountId: a.id, telegramId: a.telegramId ?? null };
   }
 }
 

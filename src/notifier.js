@@ -19,6 +19,9 @@ export class Notifier {
     this.batchMs = batchMs;
     this.queue = [];
     this.running = null; // promise of the drain loop while it runs
+    // More people than cfg.recipients (owners + ALERT_CHAT_IDS, who get everything): website accounts
+    // linked to a Telegram ID. () => [{ chatId, servers: Set|null (null = all), muted }]
+    this.audience = null;
   }
 
   mutedUntil() {
@@ -36,23 +39,44 @@ export class Notifier {
     this.store.setKv("muteUntil", null);
   }
 
-  /** Queue a message for every recipient. important=false sends it silently. */
-  send(text, important = false) {
+  /**
+   * Queue a message. important=false sends it silently.
+   * @param server  id of the server it is about: also goes to the accounts assigned to it
+   */
+  send(text, important = false, server = null) {
     if (this.isMuted()) {
       console.log("muted, dropping:", plain(text.split("\n")[0]));
       return;
     }
     if (this.queue.length >= 1000) return console.warn("notification queue full, dropping message");
     console.log("notify:", plain(text.split("\n")[0]));
-    this.queue.push({ text, important });
+    this.queue.push({ text, important, server });
     if (!this.running) this.running = this.drain().finally(() => (this.running = null));
   }
 
   /** Merge queued events into as few messages as possible. */
-  takeBatch() {
-    const items = this.queue.splice(0);
+  pack(items) {
     const important = items.some((i) => i.important);
     return { parts: splitMessage(items.map((i) => i.text).join("\n\n")), important };
+  }
+
+  /** Who gets which of these items: [[chatId, items]] */
+  route(items) {
+    const out = this.cfg.recipients.map((id) => [id, items]);
+    const done = new Set(this.cfg.recipients);
+    let people = [];
+    try {
+      people = this.audience?.() || [];
+    } catch (e) {
+      console.error("notification audience:", e.message);
+    }
+    for (const p of people) {
+      if (done.has(p.chatId) || p.muted) continue;
+      done.add(p.chatId);
+      const theirs = p.servers === null ? items : items.filter((i) => i.server && p.servers.has(i.server));
+      if (theirs.length) out.push([p.chatId, theirs]);
+    }
+    return out;
   }
 
   async drain() {
@@ -68,8 +92,8 @@ export class Notifier {
         });
         this.wake = null;
       }
-      const { parts, important } = this.takeBatch();
-      for (const chatId of this.cfg.recipients) {
+      for (const [chatId, items] of this.route(this.queue.splice(0))) {
+        const { parts, important } = this.pack(items);
         for (const part of parts) await this.deliver(chatId, part, important);
       }
     }

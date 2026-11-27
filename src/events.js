@@ -18,7 +18,7 @@ export function plain(html) {
 /** Kinds of events, for the portal's filter. "audit" (who did what) is only shown to owners. */
 export const KINDS = {
   down: "Down", offline: "Stopped / shut down", online: "Back online", connected: "First connection",
-  reboot: "Rebooted", reboot_request: "Reboot requested", alert: "Alert", resolved: "Alert resolved", update: "Updated", update_failed: "Update failed",
+  reboot: "Rebooted", reboot_request: "Reboot requested (older history)", alert: "Alert", resolved: "Alert resolved", update: "Updated", update_failed: "Update failed",
   main: "Main server", report: "Health report", audit: "Activity",
 };
 

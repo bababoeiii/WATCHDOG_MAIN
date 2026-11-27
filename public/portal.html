@@ -6,6 +6,7 @@
 <meta name="referrer" content="no-referrer">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🐕%3C/text%3E%3C/svg%3E">
 <title>Watchdog</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 :root {
   color-scheme: light;
@@ -13,8 +14,13 @@
   --accent: #2a78d6; --accent-text: #fff; --line: rgba(127,127,127,.18); --soft: rgba(127,127,127,.10);
   --good: #0ca30c; --warning: #c98a00; --critical: #d03b3b; --info: #2a78d6;
   --track: rgba(127,127,127,.16); --danger-text: #d03b3b;
-  --series-1: #2a78d6; --series-2: #eb6834; --threshold: rgba(208,59,59,.55);
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baa7c; --series-4: #9a5fd6; --threshold: rgba(208,59,59,.55);
 }
+/* inside Telegram: its own colors (set by the Telegram script as --tg-theme-*) */
+:root.in-tg { --page: var(--tg-theme-secondary-bg-color, #f0efec); --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #fcfcfb));
+  --text: var(--tg-theme-text-color, #0b0b0b); --muted: var(--tg-theme-hint-color, #6b6a66); --link: var(--tg-theme-link-color, #2a78d6);
+  --accent: var(--tg-theme-button-color, #2a78d6); --accent-text: var(--tg-theme-button-text-color, #fff); --danger-text: var(--tg-theme-destructive-text-color, #d03b3b); }
+:root.in-tg body { padding-top: 8px; }
 @media (prefers-color-scheme: dark) {
   :root { color-scheme: dark; --page: #111110; --card: #1a1a19; --text: #f0efec; --muted: #9a998f;
     --line: rgba(255,255,255,.10); --soft: rgba(255,255,255,.06); --link: #5c9ded; --accent: #3987e5; --warning: #e0a526;
@@ -124,7 +130,7 @@ td { padding: 9px 8px; border-top: 1px solid var(--line); vertical-align: top; }
 .chip { font-size: 12px; padding: 3px 8px; border-radius: 8px; background: rgba(208,59,59,.12); color: var(--danger-text); font-weight: 600; }
 .back { border: 0; background: none; color: var(--link); padding: 4px 0; margin-bottom: 6px; cursor: pointer; font-weight: 500; }
 .dhead { margin-bottom: 10px; } .dhead .sname { font-size: 20px; white-space: normal; }
-.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
 .tile { background: var(--card); border-radius: 12px; padding: 10px 12px; min-width: 0; }
 .tile .k { font-size: 12px; color: var(--muted); } .tile .v { font-size: 22px; font-weight: 650; letter-spacing: -.02em; margin-top: 2px; }
 .tile .s { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -147,6 +153,7 @@ td.r, th.r { text-align: right; } td .bar { margin-top: 4px; }
 .tip { position: fixed; pointer-events: none; z-index: 10; background: var(--text); color: var(--card); font-size: 12px; padding: 6px 8px; border-radius: 8px; white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,.18); }
 @media (max-width: 700px) { .charts { grid-template-columns: 1fr; } }
 @media (max-width: 460px) { .tiles { grid-template-columns: repeat(2, 1fr); } .grid { grid-template-columns: 1fr; } }
+.meter .lbl { white-space: nowrap; }
 @media (max-width: 560px) { .hide-sm { display: none; } .choice { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -156,6 +163,16 @@ td.r, th.r { text-align: right; } td .bar { margin-top: 4px; }
 <div id="tip" class="tip" hidden></div>
 <script>
 "use strict";
+// ---------------------------------------------------------------- Telegram (the same page is the Mini App)
+const tg = window.Telegram && window.Telegram.WebApp;
+const initData = (tg && tg.initData) || "";
+if (initData) {
+  document.documentElement.classList.add("in-tg");
+  if (tg.colorScheme === "dark") document.documentElement.style.colorScheme = "dark";
+  tg.ready();
+  tg.expand();
+}
+
 // ---------------------------------------------------------------- helpers
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -185,13 +202,13 @@ function toast(msg) {
 async function api(path, { method = "GET", body } = {}) {
   const res = await fetch("/api/web" + path, {
     method, credentials: "same-origin",
-    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
+    headers: { ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...(initData ? { "X-Telegram-Init-Data": initData } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   let data = {};
   try { data = await res.json(); } catch { /* empty */ }
   if (!res.ok) {
-    if (res.status === 401 && S.me && !path.startsWith("/login")) { S.me = null; stopLive(); render(); }
+    if (res.status === 401 && S.me && !path.startsWith("/login") && !initData) { S.me = null; stopLive(); render(); }
     throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status });
   }
   return data;
@@ -203,13 +220,14 @@ const copyBox = (text) => `<div class="copy"><pre>${esc(text)}</pre><button clas
 document.addEventListener("click", (e) => { const b = e.target.closest("[data-copy]"); if (b) copy(b.dataset.copy); });
 
 const ICON = { down: "🔴", offline: "⏹", online: "🟢", connected: "🆕", reboot: "🔄", reboot_request: "🔁", alert: "⚠️",
-  resolved: "✅", update: "⬆️", update_failed: "❗", main: "🐕", report: "🩺", audit: "👤" };
+  resolved: "✅", update: "⬆️", update_failed: "❗", main: "🐕", report: "🩺", audit: "👤" }; // reboot_request: older history
 
 // ---------------------------------------------------------------- state
 const S = {
   config: null, me: null, view: "events",
   servers: new Map(), kinds: {}, mutedUntil: null, retention: 30,
   thresholds: {}, historyMinutes: 60, detail: null, history: new Map(), hover: null, access: null,
+  main: null, mainMsg: "", newToken: null,
   events: [], filter: { server: "", kind: "" }, more: true, loading: false,
   accounts: null, accountServers: [], telegramOwners: [], editing: null, created: null,
   added: null, conn: "",
@@ -223,7 +241,11 @@ function startLive() {
   stopLive();
   const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/web`;
   ws = new WebSocket(url);
-  ws.onopen = () => { wsRetry = 0; setConn("live"); };
+  ws.onopen = () => {
+    wsRetry = 0;
+    if (initData) ws.send(JSON.stringify({ type: "auth", initData }));
+    setConn("live");
+  };
   ws.onmessage = (m) => {
     let msg; try { msg = JSON.parse(m.data); } catch { return; }
     if (msg.type === "event") onLiveEvent(msg.event);
@@ -273,6 +295,7 @@ async function loadOverview() {
   S.servers = new Map(o.servers.map((s) => [s.id, s]));
   S.kinds = o.kinds; S.mutedUntil = o.muted_until; S.retention = o.retention_days;
   S.thresholds = o.thresholds || {}; S.historyMinutes = o.history_minutes || 60;
+  S.main = o.main;
 }
 async function reloadEvents() {
   S.events = []; S.more = true;
@@ -448,7 +471,7 @@ function renderApp() {
   else if (S.view === "accounts") main = renderAccounts();
   return `<div class="top"><h1>🐕 Watchdog</h1>
       <div class="who"><span id="conn" class="conn ${S.conn}"><i></i>${S.conn === "live" ? "live" : S.conn === "down" ? "reconnecting…" : "connecting…"}</span>
-      <span><b>${esc(me.name)}</b> <span class="badge">${esc(me.role_label)}</span></span><button class="btn small" id="logout">Log out</button></div></div>
+      <span><b>${esc(me.name)}</b> <span class="badge">${esc(me.role_label)}</span></span>${initData ? "" : `<button class="btn small" id="logout">Log out</button>`}</div></div>
     <div class="tabs">${tabs.map(([k, l]) => `<button data-view="${k}" class="${S.view === k ? "on" : ""}">${l}</button>`).join("")}</div>
     ${main}`;
 }
@@ -476,7 +499,7 @@ function renderOverview() {
 function renderEvents() {
   const activity = S.view === "activity";
   const kinds = Object.entries(S.kinds).filter(([k]) => k !== "audit");
-  let html = activity ? `<div class="card small muted">Who did what on this website (logins set up, servers added, reboots, account changes). Owners only.</div>` : renderOverview();
+  let html = activity ? `<div class="card small muted">Who did what on this website (logins set up, servers added or removed, updates, tokens, account changes). Owners only.</div>` : renderOverview();
   html += `<div class="card">${activity ? "" : `<div class="filters">
       <select id="f-server"><option value="">All servers</option>${serverList().map((s) => `<option value="${esc(s.id)}" ${S.filter.server === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
       <select id="f-kind"><option value="">All types</option>${kinds.map(([k, l]) => `<option value="${k}" ${S.filter.kind === k ? "selected" : ""}>${ICON[k] || ""} ${esc(l)}</option>`).join("")}</select>
@@ -529,6 +552,8 @@ function worstDisk(m) {
   const d = (m && m.disks) || [];
   return d.length ? d.reduce((a, b) => (b.percent > a.percent ? b : a)) : null;
 }
+/** One temperature per CPU on machines with two or more CPUs (else []). */
+const cpuTemps = (m) => (m && m.temp && m.temp.cpus && m.temp.cpus.length >= 2 ? m.temp.cpus : []);
 function meter(label, value, key, right) {
   return `<div class="meter"><span class="lbl">${label}</span>
     <div class="bar"><b class="${level(value, key)}" style="width:${Math.min(100, Math.max(0, value || 0))}%"></b></div>
@@ -548,13 +573,15 @@ function serverCard(s) {
     return `<div class="card server" data-server="${esc(s.id)}">${head}<div class="facts"><span>Last seen ${s.last_seen ? fmtTime(s.last_seen) : "never"}</span>${m.os ? `<span>${esc(m.os)}</span>` : ""}</div></div>`;
   }
   const disk = worstDisk(m), temp = m.temp && m.temp.max, net = m.net || {};
-  const chips = (s.alerts || []).map((a) => `<span class="chip">⚠ ${esc(a.label)}</span>`).join("") + (s.reboot_pending ? `<span class="chip">⏳ rebooting</span>` : "");
+  const chips = (s.alerts || []).map((a) => `<span class="chip">⚠ ${esc(a.label)}${a.detail && /^CPU \d/.test(a.detail) ? ` · ${esc(a.detail)}` : ""}</span>`).join("");
   return `<div class="card server" data-server="${esc(s.id)}">${head}
     <div class="meters">
       ${meter("CPU", m.cpu && m.cpu.percent, "cpu")}
       ${meter("RAM", m.mem && m.mem.percent, "ram")}
       ${disk ? meter("Disk", disk.percent, "disk") : ""}
-      ${temp != null ? meter("Temp", Math.min(100, temp), "temp", `${Math.round(temp)}°C`) : ""}
+      ${cpuTemps(m).length >= 2
+        ? cpuTemps(m).map((c) => meter(esc(c.label).replace("CPU ", "CPU"), Math.min(100, c.current), "temp", `${Math.round(c.current)}°C`)).join("")
+        : temp != null ? meter("Temp", Math.min(100, temp), "temp", `${Math.round(temp)}°C`) : ""}
     </div>
     <div class="facts num"><span>Up ${fmtDur(m.uptime)}</span><span>↓ ${fmtRate(net.rx_rate)}</span><span>↑ ${fmtRate(net.tx_rate)}</span>
       ${m.cpu && m.cpu.load ? `<span>Load ${m.cpu.load[0].toFixed(2)}</span>` : ""}</div>
@@ -571,13 +598,12 @@ function renderServers() {
       ${S.added ? `<div style="margin-top:12px"><p class="ok">✅ <b>${esc(S.added.server.name)}</b> added${me.is_owner ? "" : " and assigned to you"}. The token is shown only now.</p>
         ${S.added.install ? `<h3>Install on the server (Linux, as root)</h3>${copyBox(S.added.install)}` : ""}
         <h3>Or put this in its .env</h3>${copyBox(S.added.env)}
-        <p class="small muted">To allow remote reboots from here, also add <code>ALLOW_REMOTE_REBOOT=true</code> to its .env.</p>
         <button class="btn small" id="added-done">Done</button></div>` : ""}</div>`;
   }
   const rank = { offline: 0, online: 1, pending: 2 };
   const list = serverList().sort((a, b) => rank[a.status] - rank[b.status] || a.name.localeCompare(b.name));
-  if (!list.length) return html + `<div class="card muted small">No servers ${me.is_owner ? "yet" : "assigned to you yet — ask an owner"}.</div>`;
-  return html + `<div class="grid">${list.map(serverCard).join("")}</div>`;
+  if (!list.length) return html + `<div class="card muted small">No servers ${me.is_owner ? "yet" : "assigned to you yet — ask an owner"}.</div>${me.is_owner ? renderMainVersion() : ""}`;
+  return html + `<div class="grid">${list.map(serverCard).join("")}</div><div style="height:10px"></div>${me.is_owner ? renderMainVersion() : ""}`;
 }
 
 function tile(k, v, s) { return `<div class="tile"><div class="k">${k}</div><div class="v num">${v}</div><div class="s">${s || "&nbsp;"}</div></div>`; }
@@ -591,18 +617,12 @@ function renderServerDetail() {
   const m = s.metrics || {};
   const cpu = m.cpu || {}, mem = m.mem || {}, net = m.net || {}, temp = m.temp;
   const online = s.status === "online";
-  let reboot = "";
-  if (S.me.can_operate) {
-    const why = s.reboot_pending ? "" : !online ? "Offline: it can't receive a reboot" : !s.allow_reboot ? "Not allowed: set ALLOW_REMOTE_REBOOT=true in its .env" : "";
-    reboot = `<button class="btn small" data-reboot="${esc(s.id)}" ${why || s.reboot_pending ? "disabled" : ""} title="${esc(why)}">${s.reboot_pending ? "⏳ Rebooting…" : "🔁 Reboot"}</button>
-      ${why ? `<span class="small muted">${esc(why)}</span>` : ""}`;
-  }
   let html = `<button class="back" data-back>‹ All servers</button>
     <div class="dhead"><div class="sh"><span class="sname">${esc(s.name)}</span>${statusPill(s)}</div>
     <div class="facts"><span>${esc(m.os || "")} ${esc(m.arch || "")}</span>${online ? `<span>Up ${fmtDur(m.uptime)}</span>` : ""}
       <span class="num">Updated ${s.last_seen ? fmtDur(nowS() - s.last_seen) + " ago" : "never"}</span>${s.version ? `<span class="num">v ${esc(s.version)}</span>` : ""}</div>
-    ${reboot ? `<div class="row" style="margin-top:10px">${reboot}</div>` : ""}</div>`;
-  if (S.me.is_owner) html += renderAccess(s);
+    </div>`;
+  if (S.me.is_owner) html += renderManage(s) + renderAccess(s);
   if (!s.metrics) return html + `<div class="card muted">No report from this server yet.</div>`;
   if ((s.alerts || []).length) {
     html += `<div class="card">${s.alerts.map((a) => `<div class="chip" style="display:inline-block;margin:2px 4px 2px 0">⚠ ${esc(a.label)}${a.detail ? " · " + esc(a.detail) : ""} — ${Math.round(a.value)}${esc(a.unit || "")} · for ${fmtDur(nowS() - a.since)}</div>`).join("")}</div>`;
@@ -610,10 +630,14 @@ function renderServerDetail() {
   html += `<div class="tiles">
     ${tile("CPU", pct(cpu.percent), cpu.count ? `${cpu.count} cores${cpu.freq_mhz ? " · " + (cpu.freq_mhz / 1000).toFixed(1) + " GHz" : ""}` : "")}
     ${tile("RAM", pct(mem.percent), mem.total ? `${fmtBytes(mem.used)} of ${fmtBytes(mem.total)}` : "")}
-    ${tile("Temp", temp ? `${Math.round(temp.max)}°C` : "—", temp ? esc(temp.max_label) : "no sensors")}
+    ${cpuTemps(m).length >= 2
+      ? cpuTemps(m).map((c) => tile(`${esc(c.label)} temp`, `${Math.round(c.current)}°C`, level(c.current, "temp") === "critical" ? "over the limit" : "")).join("")
+      : tile("Temp", temp ? `${Math.round(temp.max)}°C` : "—", temp ? esc(temp.max_label) : "no sensors")}
     ${tile("Load", cpu.load ? cpu.load[0].toFixed(2) : "—", cpu.load ? `${cpu.load[1].toFixed(2)} · ${cpu.load[2].toFixed(2)}` : "")}</div>`;
   html += `<div class="charts">${chartCard("c-cpu", "CPU %", pct(cpu.percent))}${chartCard("c-ram", "RAM %", pct(mem.percent))}
-    ${temp ? chartCard("c-temp", "Temperature °C", `${Math.round(temp.max)}°C`) : ""}
+    ${cpuTemps(m).length >= 2
+      ? chartCard("c-temp", "Temperature °C", "", cpuTemps(m).slice(0, 4).map((c, i) => `<span><i style="background:var(--series-${i + 1})"></i>${esc(c.label)} ${Math.round(c.current)}°C</span>`).join(""))
+      : temp ? chartCard("c-temp", "Temperature °C", `${Math.round(temp.max)}°C`) : ""}
     ${chartCard("c-net", "Network", "", `<span><i style="background:var(--series-1)"></i>↓ ${fmtRate(net.rx_rate)}</span><span><i style="background:var(--series-2)"></i>↑ ${fmtRate(net.tx_rate)}</span>`)}</div><div style="height:10px"></div>`;
   if (cpu.per_core && cpu.per_core.length > 1) {
     html += `<div class="card"><h3>Cores</h3><div class="cores">${cpu.per_core.map((v, i) => `<div class="core" title="Core ${i}: ${Math.round(v)}%"><b style="height:${v}%"></b><span class="num">${Math.round(v)}</span></div>`).join("")}</div></div>`;
@@ -634,13 +658,44 @@ function renderServerDetail() {
   return html;
 }
 
+/** Owners: version + update, new token, remove (what the old Telegram dashboard had). */
+function renderManage(s) {
+  const u = s.update || {};
+  let ver = s.version ? `<code>${esc(s.version)}</code>` : `<span class="muted">no version info</span>`;
+  if (u.state === "current") ver += ` <span class="badge good">up to date</span>`;
+  else if (u.state === "behind") ver += ` <span class="badge warn">⬆️ GitHub has ${esc(u.latest)}</span>`;
+  else if (u.state === "restart") ver += ` <span class="badge">restart pending</span>`;
+  const why = u.requested ? "Update requested — it pulls it on its next report" : u.enabled === false ? `Auto-update unavailable on it: ${u.reason || "?"}` : "";
+  const t = S.newToken && S.newToken.server === s.id ? S.newToken : null;
+  return `<div class="card"><h2>Manage</h2>
+    <div class="row" style="justify-content:space-between"><div>Version ${ver}${u.auto === false ? ` <span class="small muted">· manual updates</span>` : ""}</div>
+      <button class="btn small" data-act="update" ${u.requested || u.enabled === false ? "disabled" : ""}>⬆ Update from GitHub</button></div>
+    ${why ? `<p class="small muted" style="margin:6px 0 0">${esc(why)}</p>` : ""}
+    ${u.error ? `<p class="err">Last update failed: ${esc(u.error)}</p>` : ""}
+    <div class="row" style="margin-top:12px"><button class="btn small" data-act="token">🔑 New token</button><button class="btn small danger" data-act="remove">🗑 Remove server</button></div>
+    ${t ? `<div style="margin-top:12px"><p class="ok">🔑 New token for <b>${esc(s.name)}</b> — the old one no longer works. Put this on the server, shown only now:</p>
+      ${t.install ? `<h3>Reinstall in one go (Linux, as root)</h3>${copyBox(t.install)}` : ""}<h3>Or replace these lines in its .env</h3>${copyBox(t.env)}
+      <button class="btn small" id="token-done">Done</button></div>` : ""}
+  </div>`;
+}
+/** Owners: the main server's own version, at the bottom of the server list. */
+function renderMainVersion() {
+  const v = S.main;
+  if (!v) return "";
+  if (!v.enabled) return `<div class="card small muted">Main server: auto-update off (${esc(v.reason || "not a git install")})</div>`;
+  const state = !v.latest ? "" : v.commit === v.latest ? ` <span class="badge good">up to date</span>` : v.pending_restart ? ` <span class="badge">restart pending</span>` : ` <span class="badge warn">⬆️ GitHub has ${esc(v.latest)}</span>`;
+  return `<div class="card"><div class="row" style="justify-content:space-between"><div><b>Main server</b> <code>${esc(v.commit)}</code> on ${esc(v.branch)}${state}${v.auto ? "" : ` <span class="small muted">· manual updates</span>`}</div>
+    <button class="btn small" id="main-update">⬆ Update</button></div>
+    ${v.error ? `<p class="err">Last update failed: ${esc(v.error)}</p>` : ""}${S.mainMsg ? `<p class="small" style="margin:6px 0 0">${esc(S.mainMsg)}</p>` : ""}</div>`;
+}
+
 /** Owners: which staff / user accounts can see this server (owners see all). */
 function renderAccess(s) {
   const A = S.access && S.access.server === s.id ? S.access : null;
   if (!A) return `<div class="card"><h2>Who can see this server</h2><p class="small muted">Loading…</p></div>`;
   const tag = (a) => `${a.disabled ? " · disabled" : a.invited ? " · invite open" : ""}`;
   return `<div class="card"><h2>Who can see this server</h2>
-    <p class="small muted" style="margin:0 0 8px">Owners see every server. Staff can also reboot it.</p>
+    <p class="small muted" style="margin:0 0 8px">Owners see every server.</p>
     <div class="people">${A.assigned.length ? A.assigned.map((a) => `<span class="person">${esc(a.username)} <span class="small muted">${ROLE[a.role]}${tag(a)}</span>
       <button type="button" data-unassign="${esc(a.id)}" title="Remove ${esc(a.username)}" aria-label="Remove ${esc(a.username)}">✕</button></span>`).join("")
       : `<span class="small muted">Nobody yet — only owners see it.</span>`}</div>
@@ -675,7 +730,11 @@ function drawCharts() {
   const o = { tStart, tEnd, gap: Math.max(20, ((s.metrics && s.metrics.interval) || 5) * 4) };
   lineChart("c-cpu", h, [{ i: 1, color: c1, name: "CPU", fmt: pct }], { ...o, min: 0, max: 100, threshold: th.cpu });
   lineChart("c-ram", h, [{ i: 2, color: c1, name: "RAM", fmt: pct }], { ...o, min: 0, max: 100, threshold: th.ram });
-  lineChart("c-temp", h, [{ i: 3, color: c1, name: "Temp", fmt: (v) => `${Math.round(v)}°C` }], { ...o, min: 20, threshold: th.temp });
+  const cpus = cpuTemps(s.metrics);
+  const tempSeries = cpus.length >= 2
+    ? cpus.slice(0, 4).map((c, k) => ({ i: 7 + k, color: cssVar(`--series-${k + 1}`), name: c.label, fmt: (v) => `${Math.round(v)}°C` }))
+    : [{ i: 3, color: c1, name: "Temp", fmt: (v) => `${Math.round(v)}°C` }];
+  lineChart("c-temp", h, tempSeries, { ...o, min: 20, threshold: th.temp });
   lineChart("c-net", h, [{ i: 4, color: c1, name: "↓ In", fmt: fmtRate }, { i: 5, color: c2, name: "↑ Out", fmt: fmtRate }], { ...o, min: 0, axisFmt: fmtBytes });
 }
 function lineChart(id, hist, series, o) {
@@ -760,7 +819,7 @@ document.addEventListener("pointerdown", onPointer);
 window.addEventListener("resize", () => drawCharts());
 
 const ROLE = { owner: "Owner", staff: "Staff", user: "User" };
-const ROLE_HELP = { owner: "every server, accounts, activity", staff: "assigned servers; add + reboot", user: "assigned servers, read only" };
+const ROLE_HELP = { owner: "every server, accounts, activity", staff: "assigned servers; can add servers", user: "assigned servers, read only" };
 function serverChecks(name, selected) {
   if (!S.accountServers.length) return `<p class="small muted">No servers yet.</p>`;
   return `<div class="checks">${S.accountServers.map((s) => `<label><input type="checkbox" name="${name}" value="${esc(s.id)}" ${selected.includes(s.id) ? "checked" : ""}> ${esc(s.name)}</label>`).join("")}</div>`;
@@ -856,7 +915,7 @@ function render() {
 }
 
 function bindApp() {
-  $("#logout").onclick = async () => { await api("/logout", { method: "POST", body: {} }).catch(() => {}); S.me = null; stopLive(); render(); };
+  if ($("#logout")) $("#logout").onclick = async () => { await api("/logout", { method: "POST", body: {} }).catch(() => {}); S.me = null; stopLive(); render(); };
   document.querySelectorAll("[data-view]").forEach((b) => (b.onclick = async () => {
     S.view = b.dataset.view;
     S.detail = null;
@@ -878,6 +937,39 @@ function bindApp() {
     render();
   };
   document.querySelectorAll("[data-server]").forEach((c) => (c.onclick = () => openServer(c.dataset.server)));
+  document.querySelectorAll("[data-act=update],[data-act=token],[data-act=remove]").forEach((b) => (b.onclick = async () => {
+    const s = S.servers.get(S.detail); if (!s) return;
+    const id = encodeURIComponent(s.id);
+    try {
+      if (b.dataset.act === "update") {
+        const r = await api(`/servers/${id}/update`, { method: "POST", body: {} });
+        S.servers.set(s.id, r.server); toast(`Update requested: ${s.name} pulls it on its next report`);
+      } else if (b.dataset.act === "token") {
+        if (!confirm(`Make a new token for ${s.name}?\n\nThe current token stops working at once: put the new one on the server right after.`)) return;
+        S.newToken = { server: s.id, ...(await api(`/servers/${id}/token`, { method: "POST", body: {} })) };
+      } else {
+        if (!confirm(`Remove ${s.name}?\n\nIt stops being monitored and its token is revoked. Its notification history stays.`)) return;
+        await api(`/servers/${id}`, { method: "DELETE", body: {} });
+        S.servers.delete(s.id); S.detail = null; toast(`${s.name} removed`);
+      }
+    } catch (err) { toast(err.message); }
+    render();
+  }));
+  const td = $("#token-done");
+  if (td) td.onclick = () => { S.newToken = null; render(); };
+  const mu = $("#main-update");
+  if (mu) mu.onclick = async () => {
+    mu.disabled = true; S.mainMsg = "Checking GitHub…"; render();
+    try {
+      const r = await api("/main/update", { method: "POST", body: {} });
+      S.main = r.main || S.main;
+      S.mainMsg = r.status === "up-to-date" ? "Already up to date." : r.status === "busy" ? "An update is already running."
+        : r.status === "running" ? "Still installing — you'll get a Telegram message when it's done."
+        : r.status === "updated" ? `Pulled ${r.from} → ${r.to} (no main-server changes, no restart).`
+        : r.restarting ? `Updating ${r.from} → ${r.to}: the main server restarts now; this page reconnects by itself.` : `Updated to ${r.to}: restart the main server to run it.`;
+    } catch (err) { S.mainMsg = err.message; }
+    render();
+  };
   const fa = $("#f-access");
   if (fa) fa.onsubmit = async (e) => {
     e.preventDefault();
@@ -895,13 +987,6 @@ function bindApp() {
   if (back) back.onclick = () => { S.detail = null; S.hover = null; $("#tip").hidden = true; render(); };
   const ad = $("#added-done");
   if (ad) ad.onclick = () => { S.added = null; render(); };
-  document.querySelectorAll("[data-reboot]").forEach((b) => (b.onclick = async () => {
-    const s = S.servers.get(b.dataset.reboot);
-    if (!s || !confirm(`Reboot ${s.name} now?\n\nThe machine restarts; it is offline for a minute or two.`)) return;
-    try { const r = await api(`/servers/${encodeURIComponent(s.id)}/reboot`, { method: "POST", body: {} }); S.servers.set(s.id, r.server); toast(`Reboot sent to ${s.name}`); }
-    catch (err) { toast(err.message); }
-    render();
-  }));
 
   const nf = $("#f-new");
   if (nf) nf.onsubmit = async (e) => {
@@ -950,6 +1035,12 @@ function bindApp() {
   }
 }
 
+// inside Telegram without access: say so (there is no login page in Telegram)
+function renderTgError() {
+  $("#root").innerHTML = `<div class="login"><div class="top"><h1>🐕 Watchdog</h1></div><div class="card"><h2>No access</h2>
+    <p>${esc(S.tgError || "This Telegram account has no access.")}</p></div></div>`;
+}
+
 // ---------------------------------------------------------------- start
 async function enter() {
   await loadOverview();
@@ -972,7 +1063,12 @@ async function boot() {
     try { S.invite.info = await api(`/invite/${m[1]}`); } catch (e) { S.invite.error = e.message; }
     return render();
   }
-  try { await enter(); } catch { S.me = null; render(); }
+  try { await enter(); }
+  catch (e) {
+    S.me = null;
+    if (initData) { S.tgError = e.message; renderTgError(); return; }
+    render();
+  }
 }
 setInterval(() => S.me && (S.view === "events" || S.view === "servers") && renderLater(), 30000); // refresh "x min ago"
 boot();

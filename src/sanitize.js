@@ -56,6 +56,14 @@ export function sanitizeReport(raw) {
       })
     : [];
   const tempMax = temp ? num(temp.max, -50, 200) : null;
+  // machines with two or more CPUs: one temperature per CPU ("CPU 1", "CPU 2" …)
+  const cpus = temp
+    ? list(temp.cpus, 8, (c) => {
+        c = obj(c);
+        const current = c && num(c.current, -50, 200);
+        return current === null || current === undefined ? null : { label: str(c.label, 20) ?? "CPU", current };
+      })
+    : [];
 
   const load = Array.isArray(cpu.load) ? cpu.load.slice(0, 3).map((x) => num(x, 0) ?? 0) : null;
 
@@ -86,7 +94,10 @@ export function sanitizeReport(raw) {
     temp:
       tempMax === null && !sensors.length
         ? null
-        : { max: tempMax ?? Math.max(...sensors.map((s) => s.current)), max_label: str(temp.max_label, 80) ?? "", sensors },
+        : {
+            max: tempMax ?? Math.max(...sensors.map((s) => s.current)), max_label: str(temp.max_label, 80) ?? "", sensors,
+            ...(cpus.length >= 2 ? { cpus } : {}),
+          },
     procs: procs
       ? { count: int(procs.count) ?? 0, top_cpu: list(procs.top_cpu, 10, proc), top_mem: list(procs.top_mem, 10, proc) }
       : null,

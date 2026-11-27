@@ -106,7 +106,8 @@ export function metricsLine(p) {
   if (p.mem?.percent != null) parts.push(`RAM ${Math.round(p.mem.percent)}%`);
   const d = worstDisk(p);
   if (d) parts.push(`Disk ${Math.round(d.percent)}% (${esc(d.mount)})`);
-  if (p.temp?.max != null) parts.push(`🌡 ${Math.round(p.temp.max)}°C`);
+  if (p.temp?.cpus?.length >= 2) parts.push(`🌡 ${p.temp.cpus.map((c) => `${esc(c.label).replace(" ", "")} ${Math.round(c.current)}°C`).join(" · ")}`);
+  else if (p.temp?.max != null) parts.push(`🌡 ${Math.round(p.temp.max)}°C`);
   return parts.length ? parts.join(" · ") : "no data yet";
 }
 
@@ -117,7 +118,7 @@ export function serverBlock(s, now = Date.now() / 1000) {
   if (s.status === "online") {
     let out = `🟢 ${nameHtml(s)} · up ${fmtDuration(s.payload?.uptime)}\n${metricsLine(s.payload)}`;
     const active = Object.values(s.alerts || {}).filter((a) => a.active);
-    if (active.length) out += "\n⚠️ " + active.map((a) => esc(a.label)).join(", ");
+    if (active.length) out += "\n⚠️ " + active.map((a) => esc(a.label) + (/^CPU \d/.test(a.detail || "") ? ` (${esc(a.detail)})` : "")).join(", ");
     return out;
   }
   const reason =

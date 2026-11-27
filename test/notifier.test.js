@@ -71,3 +71,26 @@ test("flush waits for queued messages", () =>
     assert.equal(sent.length, 1, "sent before the flush returned");
     assert.ok(Date.now() - t0 < 1000, "without waiting out the batch window");
   }));
+
+test("each person gets their own servers' notifications; owners and the group get all; personal mute", () =>
+  quiet(async () => {
+    const sent = [];
+    const n = make({ sendMessage: async (chat, text) => sent.push({ chat, text }) }, { recipients: [42, -100] });
+    n.audience = () => [
+      { chatId: 7, servers: new Set(["web-1"]), muted: false }, // staff with web-1
+      { chatId: 8, servers: new Set(["db-1"]), muted: true }, // user with db-1, muted themselves
+      { chatId: 9, servers: null, muted: false }, // an owner account
+      { chatId: 42, servers: new Set(), muted: false }, // also in ADMIN_IDS: gets everything once, not twice
+    ];
+    n.send("🔴 web-1 is DOWN", true, "web-1");
+    n.send("🔴 db-1 is DOWN", true, "db-1");
+    n.send("🩺 Health report", false, null); // about everything: owners only
+    await n.running;
+    const to = (id) => sent.filter((m) => m.chat === id).map((m) => m.text).join(" | ");
+    assert.equal(to(42), "🔴 web-1 is DOWN\n\n🔴 db-1 is DOWN\n\n🩺 Health report");
+    assert.equal(to(-100), to(42));
+    assert.equal(to(9), to(42));
+    assert.equal(to(7), "🔴 web-1 is DOWN");
+    assert.equal(to(8), ""); // muted
+    assert.equal(sent.filter((m) => m.chat === 42).length, 1);
+  }));
